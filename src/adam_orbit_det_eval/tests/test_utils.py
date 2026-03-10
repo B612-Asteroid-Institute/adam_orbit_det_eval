@@ -39,8 +39,8 @@ def test_mpc_to_od_observations() -> None:
     nans_mask = np.any(
         np.isnan(od_no_nans.coordinates.covariance.sigmas[:, 1:3]), axis=1
     )
-    assert (
-        np.any(nans_mask) == False
+    assert not np.any(
+        nans_mask
     ), "There should be no NaN sigmas in the converted observations"
     same_values = od_no_nans.apply_mask(od_valid_var_mask)
     # Sigmas that were not NaN before should stay the same

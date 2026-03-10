@@ -1,0 +1,104 @@
+[project]
+name = "adam_orbit_det_eval"
+dynamic = ["version"]
+description = "Data and scripts for evaluation of the ADAM orbit determination libraries"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+classifiers = [
+  "Operating System :: OS Independent",
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Astronomy",
+]
+license = { file = "LICENSE.md" }
+
+keywords = ["astronomy", "orbital mechanics", "orbit determination"]
+
+dependencies = [
+  "adam_core>=0.3.6", # should be 0.5.5, once released
+  "adam_fo",
+  "adam_assist",
+  "numpy>=2.0.0",
+  "pyarrow>=13.0.0",
+  "quivr>=0.8.1",
+  "mpc-obscodes",
+  "mpcq",
+  "ipykernel",
+  "ipywidgets",
+  "matplotlib>=3.10.1",
+  "plotly",
+  "nbformat>=4.2.0",
+]
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+[project.urls]
+"Documentation" = "https://github.com/B612-Asteroid-Institute/adam_orbit_det_eval#README.md"
+"Issues" = "https://github.com/B612-Asteroid-Institute/adam_orbit_det_eval/issues"
+"Source" = "https://github.com/B612-Asteroid-Institute/adam_orbit_det_eval"
+
+
+[dependency-groups]
+test = [
+    "pytest-benchmark",
+    "pytest-cov",
+    "pytest-doctestplus",
+    "pytest-mock",
+    "pytest-xdist",
+    "pytest",
+    "isort",
+    "mypy",
+    "ruff",
+    "black",
+]
+
+[tool.black]
+line-length = 88
+
+[tool.isort]
+profile = "black"
+
+[tool.pytest.ini_options]
+norecursedirs = ["__pypackages__"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+lint.ignore = []
+exclude = ["build"]
+
+[tool.pdm.build]
+includes = ["src/adam_orbit_det_eval/"]
+excludes = [
+  "**/__pycache__/**",
+  "**/*.py[cod]",
+  "**/*.nbc",
+  "**/*.nbi",
+  "**/.DS_Store",
+]
+
+[tool.pdm.version]
+source = "scm"
+write_to = "adam_orbit_det_eval/_version.py"
+write_template = "__version__ = '{}'"
+
+
+[tool.pdm.scripts]
+check = { composite = ["lint", "typecheck", "test"] }
+format = { composite = ["black ./src/adam_orbit_det_eval", "isort ./src/adam_orbit_det_eval"] }
+lint = { composite = [
+  "ruff check ./src/adam_orbit_det_eval",
+  "black --check ./src/adam_orbit_det_eval",
+  "isort --check-only ./src/adam_orbit_det_eval",
+] }
+fix = "ruff check ./src/adam_orbit_det_eval --fix"
+typecheck = "mypy --strict ./src/adam_orbit_det_eval"
+
+test = "pytest --benchmark-skip -m 'not profile' {args}"
+doctest = "pytest --doctest-plus --doctest-only"
+benchmark = "pytest --benchmark-only {args}"
+coverage = "pytest --benchmark-skip --cov=adam_orbit_det_eval --cov-report=xml -m 'not profile' {args}"

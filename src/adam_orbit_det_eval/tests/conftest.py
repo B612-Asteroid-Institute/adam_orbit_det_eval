@@ -39,7 +39,7 @@ class QualityTracker:
             "delta": delta,
             "percent": percent,
         }
-        _quality_results[name].append(entry)
+        _quality_results[self._node_name].append(entry)
         return entry  # caller can still assert on it if desired
 
 
@@ -58,12 +58,8 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     tr = terminalreporter
     tr.write_sep("=", "quality tracker")
 
-    # Flatten all entries and figure out column widths
-    all_entries: list[dict] = [e for rows in _quality_results.values() for e in rows]
-    print("QR", _quality_results)
-
-    col_test = max(len(e["test"]) for e in all_entries)
-    col_metric = max(len(e["metric"]) for e in all_entries)
+    col_test = max(len(e) for e in _quality_results.keys())
+    col_metric = max(len(row["metric"]) for e in _quality_results.values() for row in e)
     col_test = max(col_test, 4)  # "Test"
     col_metric = max(col_metric, 5)  # "Param"
     num_w = 12  # width of each numeric column
@@ -79,17 +75,19 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     tr.write_line(header)
     tr.write_line("-" * len(header))
 
-    for entry in all_entries:
+    def fmt(v):
+        return f"{v:.4f}" if not np.isnan(v) else "N/A"
 
-        def fmt(v):
-            return f"{v:.4f}" if not np.isnan(v) else "N/A"
-
-        line = (
-            f"{entry['test']:<{col_test}}  "
-            f"{entry['metric']:<{col_metric}}  "
-            f"{fmt(entry['actual']):>{num_w}}  "
-            f"{fmt(entry['baseline']):>{num_w}}  "
-            f"{fmt(entry['delta']):>{num_w}}  "
-            f"{fmt(entry['percent']):>{num_w}}"
-        )
-        tr.write_line(line)
+    for test in _quality_results.values():
+        first = True
+        for entry in test:
+            line = f"{entry['test']:<{col_test}}  " if first else " " * (col_test + 2)
+            line += (
+                f"{entry['metric']:<{col_metric}}  "
+                f"{fmt(entry['actual']):>{num_w}}  "
+                f"{fmt(entry['baseline']):>{num_w}}  "
+                f"{fmt(entry['delta']):>{num_w}}  "
+                f"{fmt(entry['percent']):>{num_w}}"
+            )
+            first = False
+            tr.write_line(line)

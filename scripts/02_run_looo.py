@@ -116,12 +116,18 @@ def parse_args():
 def get_propagator_class(name: str):
     if name == "twobody":
         try:
-            from adam_core.dynamics.propagation import TwoBodyPropagator
+            # adam_core 0.5.x: no standalone TwoBodyPropagator class;
+            # wrap propagate_2body in a minimal Propagator subclass.
+            from adam_core.dynamics.propagation import propagate_2body
+            from adam_core.propagator.propagator import Propagator
+
+            class TwoBodyPropagator(Propagator):
+                def _propagate_orbits(self, orbits, times, max_iter=1000, tol=1e-14, **kwargs):
+                    return propagate_2body(orbits, times, max_iter=max_iter, tol=tol)
+
             return TwoBodyPropagator
-        except ImportError:
-            logger.error(
-                "TwoBodyPropagator not found. Make sure adam_core is installed."
-            )
+        except Exception as e:
+            logger.error(f"Could not set up TwoBodyPropagator: {e}")
             sys.exit(1)
     elif name == "assist":
         try:

@@ -118,9 +118,12 @@ def main():
     )
 
     # --- Query orbits first to get the candidate pool ---
-    logger.info(f"Querying {args.sample_type} orbit pool from BigQuery...")
-    all_orbits = client.query_all_orbits(orbit_class=args.sample_type if args.sample_type != "all" else None)
-    provids = all_orbits.requested_provid.to_pylist()
+    # all_orbits() returns the full MPC orbit catalog; we sample from it.
+    logger.info(f"Querying full orbit pool from BigQuery (this may take a moment)...")
+    all_orbits = client.all_orbits()
+    # Use 'provid' column which is the unpacked primary provisional designation
+    provid_col = "provid" if "provid" in all_orbits.table.schema.names else "requested_provid"
+    provids = [p for p in all_orbits.table.column(provid_col).to_pylist() if p is not None]
     logger.info(f"Found {len(provids)} candidate objects")
 
     # --- Subsample for manageability ---

@@ -136,7 +136,7 @@ def parse_args():
 def main():
     args = parse_args()
     run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    output_dir = output_dir / run_id
+    output_dir = args.output_dir / run_id
     output_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Run ID: {run_id}  →  {output_dir}")
 

@@ -38,6 +38,7 @@ assist   : ASSIST N-body propagator (accurate, ~100ms/orbit). Use for
 import argparse
 import logging
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 logging.basicConfig(
@@ -59,7 +60,15 @@ def parse_args():
         "--output-dir",
         type=Path,
         default=Path("data/looo_results"),
-        help="Directory for output parquet files",
+        help="Base directory for output; results go in a timestamped subdirectory "
+             "unless --run-id is provided.",
+    )
+    p.add_argument(
+        "--run-id",
+        type=str,
+        default=None,
+        help="Explicit run identifier (e.g. 'run_001').  Defaults to a UTC timestamp "
+             "so each run is stored separately and prior results are never overwritten.",
     )
     p.add_argument(
         "--propagator",
@@ -95,9 +104,15 @@ def parse_args():
         "--max-processes",
         type=int,
         default=1,
-        help="Number of parallel workers (default: 1). "
-             "Note: the pipeline currently runs serially; parallelism "
-             "over objects will be added in a future iteration.",
+        help="Number of parallel worker processes (default: 1).",
+    )
+    p.add_argument(
+        "--sigma-model",
+        choices=["veres2017", "const"],
+        default="veres2017",
+        help="How to fill missing rmsra/rmsdec values: "
+             "'veres2017' uses per-(stn, catalog) sigma lookup from Veres et al. 2017 (default); "
+             "'const' fills with a small constant (original behaviour, inflates chi2).",
     )
     p.add_argument(
         "--object-ids",
@@ -145,7 +160,10 @@ def get_propagator_class(name: str):
 
 def main():
     args = parse_args()
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    output_dir = args.output_dir / run_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Run ID: {run_id}  →  {output_dir}")
 
     # --- Load input data ---
     obs_path = args.input_dir / "mpc_observations.parquet"
@@ -166,6 +184,7 @@ def main():
     logger.info(f"Loading orbits from {orbits_path}")
     from mpcq.orbits import MPCOrbits
     mpc_orbits = MPCOrbits.from_parquet(orbits_path)
+    logger.info(f"Sigma model: {args.sigma_model}")
 
     import pyarrow.compute as pc
     n_objects = len(pc.unique(mpc_observations.requested_provid))
@@ -190,21 +209,24 @@ def main():
     # --- Write run configuration for reproducibility ---
     import json
     run_config = {
+        "run_id": run_id,
         "propagator": args.propagator,
+        "sigma_model": args.sigma_model,
         "min_obs_remaining": args.min_obs_remaining,
         "min_arc_length_days": args.min_arc_length,
         "min_obs_held_out": args.min_obs_held_out,
         "max_held_out_fraction": args.max_held_out_fraction,
+        "max_processes": args.max_processes,
         "input_obs": str(obs_path),
         "input_orbits": str(orbits_path),
         "n_input_objects": int(n_objects),
         "n_input_observations": len(mpc_observations),
     }
-    config_path = args.output_dir / "run_config.json"
+    config_path = output_dir / "run_config.json"
     config_path.write_text(json.dumps(run_config, indent=2))
     logger.info(f"Run configuration written to {config_path}")
 
-    output_path = args.output_dir / "looo_results.parquet"
+    output_path = output_dir / "looo_results.parquet"
 
     # --- Run the pipeline ---
     logger.info("Starting LOOO pipeline...")
@@ -217,6 +239,7 @@ def main():
         object_ids=args.object_ids,
         max_processes=args.max_processes,
         write_interval=args.write_interval,
+        sigma_model=args.sigma_model,
     )
 
     logger.info(

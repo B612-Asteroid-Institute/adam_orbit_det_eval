@@ -105,6 +105,7 @@ def _worker(
     propagator_class_fqn: str,
     config: LOOOConfig,
     checkpoint_dir: str,
+    sigma_model: str = "veres2017",
 ) -> Tuple[str, int]:
     """
     Worker function executed in a subprocess.
@@ -160,7 +161,7 @@ def _worker(
 
     # --- Convert to OD observations ---
     try:
-        od_obs = mpc_to_od_observations(obj_mpc_obs, prevent_nans=True)
+        od_obs = mpc_to_od_observations(obj_mpc_obs, prevent_nans=True, sigma_model=sigma_model)
     except Exception as e:
         _log.warning(f"{object_id}: mpc_to_od_observations failed: {e}")
         pq.write_table(LOOOResult.empty().table, ckpt)
@@ -234,6 +235,7 @@ def run_looo_pipeline(
     max_processes: Optional[int] = None,
     propagator_kwargs: Optional[dict] = None,
     write_interval: int = 50,  # kept for API compatibility, no longer used
+    sigma_model: str = "veres2017",
 ) -> LOOOResult:
     """
     Run LOOO cross-validation for all (or a subset of) objects, in parallel.
@@ -317,6 +319,7 @@ def run_looo_pipeline(
                 fqn,
                 config,
                 str(checkpoint_dir),
+                sigma_model,
             ): oid
             for oid in remaining
         }

@@ -256,7 +256,7 @@ def compute_catalog_stats(
     # Group by (stn, astcat)
     stn_col = tbl.column("stn").to_pylist()
     astcat_col = tbl.column("astcat").to_pylist()
-    groups = sorted(set(zip(stn_col, astcat_col)))
+    groups = sorted(set(zip(stn_col, astcat_col)), key=lambda x: (x[0] or "", x[1] or ""))
 
     rows = []
     for stn, astcat in groups:

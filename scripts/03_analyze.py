@@ -50,6 +50,7 @@ import argparse
 import json
 import logging
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 logging.basicConfig(
@@ -71,7 +72,15 @@ def parse_args():
         "--output-dir",
         type=Path,
         default=Path("data/looo_analysis"),
-        help="Directory to write output files (default: data/looo_analysis)",
+        help="Base directory for analysis outputs; results go in a timestamped "
+             "subdirectory unless --run-id is provided.",
+    )
+    p.add_argument(
+        "--run-id",
+        type=str,
+        default=None,
+        help="Explicit run identifier.  Defaults to a UTC timestamp so each "
+             "analysis run is stored separately.",
     )
     p.add_argument(
         "--min-obs-remaining",
@@ -126,12 +135,30 @@ def parse_args():
 
 def main():
     args = parse_args()
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    output_dir = output_dir / run_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Run ID: {run_id}  →  {output_dir}")
 
     # --- Load LOOO results ---
+    # Support both: a direct run dir (containing looo_results.parquet) and
+    # a base results dir (containing timestamped run subdirs).
     results_path = args.input_dir / "looo_results.parquet"
     if not results_path.exists():
-        logger.error(f"Results file not found: {results_path}")
+        # Try the most recently modified subdirectory
+        subdirs = sorted(
+            [d for d in args.input_dir.iterdir() if d.is_dir()],
+            key=lambda d: d.stat().st_mtime,
+            reverse=True,
+        )
+        for sub in subdirs:
+            candidate = sub / "looo_results.parquet"
+            if candidate.exists():
+                results_path = candidate
+                logger.info(f"Using most recent run: {sub.name}")
+                break
+    if not results_path.exists():
+        logger.error(f"Results file not found under {args.input_dir}")
         logger.error("Run 02_run_looo.py first.")
         sys.exit(1)
 
@@ -170,7 +197,7 @@ def main():
         "min_obs_per_stn": args.min_obs_per_stn,
         "min_obs_per_catalog_group": args.min_obs_per_catalog_group,
     }
-    config_path = args.output_dir / "analysis_config.json"
+    config_path = output_dir / "analysis_config.json"
     config_path.write_text(json.dumps(analysis_config, indent=2))
     logger.info(f"Analysis configuration written to {config_path}")
 
@@ -196,12 +223,12 @@ def main():
     else:
         logger.info(f"Observatory statistics computed for {len(obs_stats)} observatories")
 
-    obs_stats_path = args.output_dir / "observatory_stats.parquet"
+    obs_stats_path = output_dir / "observatory_stats.parquet"
     obs_stats.to_parquet(obs_stats_path)
     logger.info(f"Observatory statistics written to {obs_stats_path}")
 
     # --- Print human-readable summary ---
-    summary_path = args.output_dir / "observatory_summary.txt"
+    summary_path = output_dir / "observatory_summary.txt"
     import io, contextlib
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
@@ -229,7 +256,7 @@ def main():
                 f"Catalog statistics computed for {len(cat_stats)} (stn, catalog) groups"
             )
 
-        cat_stats_path = args.output_dir / "catalog_stats.parquet"
+        cat_stats_path = output_dir / "catalog_stats.parquet"
         cat_stats.to_parquet(cat_stats_path)
         logger.info(f"Catalog statistics written to {cat_stats_path}")
 
@@ -238,7 +265,7 @@ def main():
             _print_catalog_summary(cat_stats, top_n=args.top_n)
 
     logger.info("Analysis complete.")
-    logger.info(f"Outputs written to {args.output_dir}")
+    logger.info(f"Outputs written to {output_dir}")
 
 
 def _print_catalog_summary(cat_stats, top_n: int = 30) -> None:

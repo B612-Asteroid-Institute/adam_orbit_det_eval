@@ -32,6 +32,7 @@ class ObservatoryStats(qv.Table):
     # Sample sizes
     n_obs = qv.Int64Column()          # total held-out observations
     n_objects = qv.Int64Column()      # distinct objects evaluated
+    n_objects_filtered = qv.Int64Column()  # objects excluded by difficulty filter
 
     # Residual bias (arcseconds) — systematic offset
     mean_ra_arcsec = qv.Float64Column()
@@ -88,6 +89,31 @@ def _nanmedian_abs(arr: np.ndarray) -> float:
     return float(v) if np.isfinite(v) else np.nan
 
 
+def _flag_difficult_objects(
+    tbl,
+    max_object_mean_chi2: float,
+) -> set:
+    """
+    Return set of object_ids where the mean held-out chi2 across ALL stations
+    exceeds the threshold.
+
+    These objects are likely subject to non-gravitational forces (comets,
+    high-Yarkovsky asteroids) or propagator failure — the inflated chi2 is
+    an object-level property, not a station-level one, and including them
+    biases sigma estimates upward for every station that observed them.
+    """
+    from collections import defaultdict
+    obj_chi2: dict = defaultdict(list)
+    for obj, c in zip(tbl.column("object_id").to_pylist(), tbl.column("chi2").to_pylist()):
+        if c is not None:
+            obj_chi2[obj].append(c)
+    return {
+        obj_id
+        for obj_id, vals in obj_chi2.items()
+        if len(vals) > 0 and np.nanmean(vals) > max_object_mean_chi2
+    }
+
+
 def _filter_results(
     results: LOOOResult,
     min_obs_remaining: Optional[int] = None,
@@ -125,6 +151,8 @@ def compute_observatory_stats(
     max_held_out_fraction: Optional[float] = None,
     max_hold_in_reduced_chi2: Optional[float] = 100.0,
     min_obs_per_stn: int = 10,
+    object_weighted: bool = False,
+    max_object_mean_chi2: Optional[float] = None,
 ) -> ObservatoryStats:
     """
     Compute per-observatory summary statistics from LOOO results.
@@ -135,17 +163,25 @@ def compute_observatory_stats(
         Output from run_looo_pipeline.
     min_obs_remaining : int, optional
         Only include rows where the hold-in fit had >= this many observations.
-        Controls for orbit degeneracy.
     min_arc_length_days : float, optional
         Only include rows where the hold-in arc was >= this many days.
     max_held_out_fraction : float, optional
         Only include rows where the held-out fraction <= this.
     max_hold_in_reduced_chi2 : float, optional
         Exclude rows where the hold-in fit was poor (chi2 > threshold).
-        Default 100 — filters extreme failures.
     min_obs_per_stn : int
-        Minimum number of observations an observatory must have across all
-        objects to be included in the output. Avoids noisy statistics.
+        Minimum observations per observatory to be reported.
+    object_weighted : bool
+        If True, compute two-level statistics: average per-object first, then
+        average over objects (each object weighted equally regardless of how
+        many observations it contributed). Prevents heavily-observed objects
+        from dominating. Default False for backward compatibility.
+    max_object_mean_chi2 : float, optional
+        If set (and object_weighted=True), exclude objects where the mean
+        held-out chi2 across ALL stations exceeds this threshold. These are
+        likely non-gravitational-force objects (comets, high-Yarkovsky) whose
+        inflated chi2 is an object-level property, not a station problem.
+        Recommended: 50.0.
 
     Returns
     -------
@@ -160,7 +196,18 @@ def compute_observatory_stats(
     )
 
     tbl = filtered.table
-    stns = pc.unique(filtered.stn).to_pylist()
+
+    # Identify and optionally remove difficult (likely non-grav) objects
+    difficult_objects: set = set()
+    if object_weighted and max_object_mean_chi2 is not None:
+        difficult_objects = _flag_difficult_objects(tbl, max_object_mean_chi2)
+        if difficult_objects:
+            keep = pa.array(
+                [obj not in difficult_objects for obj in tbl.column("object_id").to_pylist()]
+            )
+            tbl = tbl.filter(keep)
+
+    stns = pc.unique(tbl.column("stn")).to_pylist()
 
     rows = []
     for stn in sorted(stns):
@@ -171,37 +218,93 @@ def compute_observatory_stats(
         if n_obs < min_obs_per_stn:
             continue
 
-        ra = stn_tbl.column("residual_ra_arcsec").to_pylist()
-        dec = stn_tbl.column("residual_dec_arcsec").to_pylist()
-        chi2 = stn_tbl.column("chi2").to_pylist()
+        objects = stn_tbl.column("object_id")
+        n_objects = int(len(pc.unique(objects)))
+
+        # Count how many objects were filtered out for this station
+        if difficult_objects:
+            all_stn_mask = pc.equal(filtered.table.column("stn"), stn)
+            all_objs = set(filtered.table.filter(all_stn_mask).column("object_id").to_pylist())
+            n_objects_filtered = int(len(all_objs & difficult_objects))
+        else:
+            n_objects_filtered = 0
+
         dq = stn_tbl.column("delta_q_au").to_pylist()
         de = stn_tbl.column("delta_e").to_pylist()
         di = stn_tbl.column("delta_i_deg").to_pylist()
         rchi2 = stn_tbl.column("hold_in_reduced_chi2").to_pylist()
-        objects = stn_tbl.column("object_id")
-
-        ra_arr = np.array([x for x in ra if x is not None], dtype=float)
-        dec_arr = np.array([x for x in dec if x is not None], dtype=float)
-        chi2_arr = np.array([x for x in chi2 if x is not None], dtype=float)
         dq_arr = np.array([x for x in dq if x is not None], dtype=float)
         de_arr = np.array([x for x in de if x is not None], dtype=float)
         di_arr = np.array([x for x in di if x is not None], dtype=float)
         rchi2_arr = np.array([x for x in rchi2 if x is not None], dtype=float)
-        n_objects = len(pc.unique(objects))
+
+        if object_weighted:
+            # Two-level: compute per-object means first, then average over objects
+            obj_ids = pc.unique(stn_tbl.column("object_id")).to_pylist()
+            per_obj_ra, per_obj_dec, per_obj_rms_ra, per_obj_rms_dec, per_obj_chi2 = [], [], [], [], []
+            for obj_id in obj_ids:
+                obj_mask = pc.equal(stn_tbl.column("object_id"), obj_id)
+                obj_tbl = stn_tbl.filter(obj_mask)
+                ra_o = np.array([x for x in obj_tbl.column("residual_ra_arcsec").to_pylist() if x is not None], dtype=float)
+                dec_o = np.array([x for x in obj_tbl.column("residual_dec_arcsec").to_pylist() if x is not None], dtype=float)
+                chi2_o = np.array([x for x in obj_tbl.column("chi2").to_pylist() if x is not None], dtype=float)
+                if len(ra_o) == 0:
+                    continue
+                per_obj_ra.append(_nanmean(ra_o))
+                per_obj_dec.append(_nanmean(dec_o))
+                per_obj_rms_ra.append(_nanrms(ra_o))
+                per_obj_rms_dec.append(_nanrms(dec_o))
+                per_obj_chi2.append(_nanmean(chi2_o))
+
+            if not per_obj_ra:
+                continue
+
+            ra_arr = np.array(per_obj_ra)
+            dec_arr = np.array(per_obj_dec)
+            rms_ra_arr = np.array(per_obj_rms_ra)
+            rms_dec_arr = np.array(per_obj_rms_dec)
+            chi2_arr = np.array(per_obj_chi2)
+
+            mean_ra = _nanmean(ra_arr)
+            mean_dec = _nanmean(dec_arr)
+            # RMS: average of per-object RMS (not RMS of per-object means, which would lose within-object scatter)
+            rms_ra = _nanmean(rms_ra_arr)
+            rms_dec = _nanmean(rms_dec_arr)
+            med_abs_ra = float(np.nanmedian(np.abs(ra_arr)))
+            med_abs_dec = float(np.nanmedian(np.abs(dec_arr)))
+            mean_chi2 = _nanmean(chi2_arr)
+            med_chi2 = float(np.nanmedian(chi2_arr))
+        else:
+            # Original: flat observation-weighted aggregation
+            ra = stn_tbl.column("residual_ra_arcsec").to_pylist()
+            dec = stn_tbl.column("residual_dec_arcsec").to_pylist()
+            chi2 = stn_tbl.column("chi2").to_pylist()
+            ra_arr = np.array([x for x in ra if x is not None], dtype=float)
+            dec_arr = np.array([x for x in dec if x is not None], dtype=float)
+            chi2_arr = np.array([x for x in chi2 if x is not None], dtype=float)
+            mean_ra = _nanmean(ra_arr)
+            mean_dec = _nanmean(dec_arr)
+            rms_ra = _nanrms(ra_arr)
+            rms_dec = _nanrms(dec_arr)
+            med_abs_ra = _nanmedian_abs(ra_arr)
+            med_abs_dec = _nanmedian_abs(dec_arr)
+            mean_chi2 = _nanmean(chi2_arr)
+            med_chi2 = float(np.nanmedian(chi2_arr)) if len(chi2_arr) > 0 else np.nan
 
         rows.append(
             dict(
                 stn=stn,
                 n_obs=n_obs,
-                n_objects=int(n_objects),
-                mean_ra_arcsec=_nanmean(ra_arr),
-                mean_dec_arcsec=_nanmean(dec_arr),
-                rms_ra_arcsec=_nanrms(ra_arr),
-                rms_dec_arcsec=_nanrms(dec_arr),
-                median_abs_ra_arcsec=_nanmedian_abs(ra_arr),
-                median_abs_dec_arcsec=_nanmedian_abs(dec_arr),
-                mean_chi2_per_obs=_nanmean(chi2_arr),
-                median_chi2_per_obs=float(np.nanmedian(chi2_arr)) if len(chi2_arr) > 0 else np.nan,
+                n_objects=n_objects,
+                n_objects_filtered=n_objects_filtered,
+                mean_ra_arcsec=mean_ra,
+                mean_dec_arcsec=mean_dec,
+                rms_ra_arcsec=rms_ra,
+                rms_dec_arcsec=rms_dec,
+                median_abs_ra_arcsec=med_abs_ra,
+                median_abs_dec_arcsec=med_abs_dec,
+                mean_chi2_per_obs=mean_chi2,
+                median_chi2_per_obs=med_chi2,
                 mean_abs_delta_q_au=_nanmean(np.abs(dq_arr)) if len(dq_arr) > 0 else np.nan,
                 mean_abs_delta_e=_nanmean(np.abs(de_arr)) if len(de_arr) > 0 else np.nan,
                 mean_abs_delta_i_deg=_nanmean(np.abs(di_arr)) if len(di_arr) > 0 else np.nan,
@@ -216,6 +319,7 @@ def compute_observatory_stats(
         stn=[r["stn"] for r in rows],
         n_obs=[r["n_obs"] for r in rows],
         n_objects=[r["n_objects"] for r in rows],
+        n_objects_filtered=[r["n_objects_filtered"] for r in rows],
         mean_ra_arcsec=[r["mean_ra_arcsec"] for r in rows],
         mean_dec_arcsec=[r["mean_dec_arcsec"] for r in rows],
         rms_ra_arcsec=[r["rms_ra_arcsec"] for r in rows],
@@ -237,6 +341,8 @@ def compute_catalog_stats(
     min_arc_length_days: Optional[float] = None,
     max_hold_in_reduced_chi2: Optional[float] = 100.0,
     min_obs_per_group: int = 10,
+    object_weighted: bool = False,
+    max_object_mean_chi2: Optional[float] = None,
 ) -> CatalogStats:
     """
     Compute statistics broken down by (observatory, astrometric catalog) pair.
@@ -253,9 +359,18 @@ def compute_catalog_stats(
 
     tbl = filtered.table
 
+    if object_weighted and max_object_mean_chi2 is not None:
+        difficult_objects = _flag_difficult_objects(tbl, max_object_mean_chi2)
+        if difficult_objects:
+            keep = pa.array(
+                [obj not in difficult_objects for obj in tbl.column("object_id").to_pylist()]
+            )
+            tbl = tbl.filter(keep)
+
     # Group by (stn, astcat)
     stn_col = tbl.column("stn").to_pylist()
     astcat_col = tbl.column("astcat").to_pylist()
+    obj_col = tbl.column("object_id").to_pylist()
     groups = sorted(set(zip(stn_col, astcat_col)), key=lambda x: (x[0] or "", x[1] or ""))
 
     rows = []
@@ -268,20 +383,55 @@ def compute_catalog_stats(
         if n_obs < min_obs_per_group:
             continue
 
-        ra = np.array([x for x in grp.column("residual_ra_arcsec").to_pylist() if x is not None], dtype=float)
-        dec = np.array([x for x in grp.column("residual_dec_arcsec").to_pylist() if x is not None], dtype=float)
-        chi2 = np.array([x for x in grp.column("chi2").to_pylist() if x is not None], dtype=float)
+        if object_weighted:
+            grp_obj_ids = pc.unique(grp.column("object_id")).to_pylist()
+            per_obj_ra, per_obj_dec, per_obj_rms_ra, per_obj_rms_dec, per_obj_chi2 = [], [], [], [], []
+            for obj_id in grp_obj_ids:
+                obj_mask = pc.equal(grp.column("object_id"), obj_id)
+                obj_grp = grp.filter(obj_mask)
+                ra_o = np.array([x for x in obj_grp.column("residual_ra_arcsec").to_pylist() if x is not None], dtype=float)
+                dec_o = np.array([x for x in obj_grp.column("residual_dec_arcsec").to_pylist() if x is not None], dtype=float)
+                chi2_o = np.array([x for x in obj_grp.column("chi2").to_pylist() if x is not None], dtype=float)
+                if len(ra_o) == 0:
+                    continue
+                per_obj_ra.append(_nanmean(ra_o))
+                per_obj_dec.append(_nanmean(dec_o))
+                per_obj_rms_ra.append(_nanrms(ra_o))
+                per_obj_rms_dec.append(_nanrms(dec_o))
+                per_obj_chi2.append(_nanmean(chi2_o))
+
+            if not per_obj_ra:
+                continue
+            ra = np.array(per_obj_ra)
+            dec = np.array(per_obj_dec)
+            rms_ra = _nanmean(np.array(per_obj_rms_ra))
+            rms_dec = _nanmean(np.array(per_obj_rms_dec))
+            chi2 = np.array(per_obj_chi2)
+            mean_ra = _nanmean(ra)
+            mean_dec = _nanmean(dec)
+            mean_chi2 = _nanmean(chi2)
+            med_chi2 = float(np.nanmedian(chi2))
+        else:
+            ra = np.array([x for x in grp.column("residual_ra_arcsec").to_pylist() if x is not None], dtype=float)
+            dec = np.array([x for x in grp.column("residual_dec_arcsec").to_pylist() if x is not None], dtype=float)
+            chi2 = np.array([x for x in grp.column("chi2").to_pylist() if x is not None], dtype=float)
+            mean_ra = _nanmean(ra)
+            mean_dec = _nanmean(dec)
+            rms_ra = _nanrms(ra)
+            rms_dec = _nanrms(dec)
+            mean_chi2 = _nanmean(chi2)
+            med_chi2 = float(np.nanmedian(chi2)) if len(chi2) > 0 else np.nan
 
         rows.append(dict(
             stn=stn,
             astcat=astcat,
             n_obs=n_obs,
-            mean_ra_arcsec=_nanmean(ra),
-            mean_dec_arcsec=_nanmean(dec),
-            rms_ra_arcsec=_nanrms(ra),
-            rms_dec_arcsec=_nanrms(dec),
-            mean_chi2_per_obs=_nanmean(chi2),
-            median_chi2_per_obs=float(np.nanmedian(chi2)) if len(chi2) > 0 else np.nan,
+            mean_ra_arcsec=mean_ra,
+            mean_dec_arcsec=mean_dec,
+            rms_ra_arcsec=rms_ra,
+            rms_dec_arcsec=rms_dec,
+            mean_chi2_per_obs=mean_chi2,
+            median_chi2_per_obs=med_chi2,
         ))
 
     if not rows:

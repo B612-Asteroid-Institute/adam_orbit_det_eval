@@ -130,6 +130,23 @@ def parse_args():
         default=False,
         help="Skip computation of per-(stn, catalog) statistics",
     )
+    p.add_argument(
+        "--object-weighted",
+        action="store_true",
+        default=False,
+        help="Use two-level averaging: compute per-object statistics first, then "
+             "average over objects (each object weighted equally). Prevents heavily-"
+             "observed objects from dominating. Recommended for unbiased sigma estimates.",
+    )
+    p.add_argument(
+        "--max-object-chi2",
+        type=float,
+        default=None,
+        help="When --object-weighted is set, exclude objects where the mean held-out "
+             "chi2 across ALL stations exceeds this threshold. Filters non-gravitational "
+             "force objects (comets, high-Yarkovsky) whose inflation is object-level, "
+             "not station-level. Recommended: 50.0.",
+    )
     return p.parse_args()
 
 
@@ -196,6 +213,8 @@ def main():
         "max_hold_in_reduced_chi2": args.max_chi2,
         "min_obs_per_stn": args.min_obs_per_stn,
         "min_obs_per_catalog_group": args.min_obs_per_catalog_group,
+        "object_weighted": args.object_weighted,
+        "max_object_mean_chi2": args.max_object_chi2,
     }
     config_path = output_dir / "analysis_config.json"
     config_path.write_text(json.dumps(analysis_config, indent=2))
@@ -209,6 +228,11 @@ def main():
     )
 
     logger.info("Computing per-observatory statistics...")
+    if args.object_weighted:
+        logger.info(
+            f"Object-weighted mode: averaging per-object first, then over objects. "
+            f"max_object_chi2={args.max_object_chi2}"
+        )
     obs_stats = compute_observatory_stats(
         results,
         min_obs_remaining=args.min_obs_remaining,
@@ -216,6 +240,8 @@ def main():
         max_held_out_fraction=args.max_held_out_frac,
         max_hold_in_reduced_chi2=args.max_chi2,
         min_obs_per_stn=args.min_obs_per_stn,
+        object_weighted=args.object_weighted,
+        max_object_mean_chi2=args.max_object_chi2,
     )
 
     if len(obs_stats) == 0:
@@ -247,6 +273,8 @@ def main():
             min_arc_length_days=args.min_arc_length,
             max_hold_in_reduced_chi2=args.max_chi2,
             min_obs_per_group=args.min_obs_per_catalog_group,
+            object_weighted=args.object_weighted,
+            max_object_mean_chi2=args.max_object_chi2,
         )
 
         if len(cat_stats) == 0:

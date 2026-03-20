@@ -116,16 +116,10 @@ def get_propagator_class(name: str):
     """Return the propagator class for the given name."""
     if name == "twobody":
         try:
-            from adam_core.dynamics.propagation import propagate_2body
-            from adam_core.propagator.propagator import Propagator
-
-            class TwoBodyPropagator(Propagator):
-                def _propagate_orbits(self, orbits, times, max_iter=1000, tol=1e-14, **kwargs):
-                    return propagate_2body(orbits, times, max_iter=max_iter, tol=tol)
-
+            from adam_orbit_det_eval.propagators import TwoBodyPropagator
             return TwoBodyPropagator
         except Exception as e:
-            logger.error(f"Could not set up TwoBodyPropagator: {e}")
+            logger.error(f"Could not import TwoBodyPropagator: {e}")
             sys.exit(1)
     elif name == "assist":
         try:

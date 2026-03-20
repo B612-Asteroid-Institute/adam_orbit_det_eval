@@ -111,11 +111,12 @@ def evaluate_recovery(
     # Load truth biases
     truth = pd.read_csv(truth_biases_csv)
 
-    # The observatory_stats are keyed by 'stn', which for synthetic data is the fake code.
-    # truth_biases are keyed by 'fake_code'.
+    # The observatory_stats are keyed by 'stn', which for synthetic data is the real code
+    # (since fake codes like AA01 are not valid SPICE observatory codes).
+    # truth_biases have both 'fake_code' and 'real_code'; join on real_code.
     merged = truth.merge(
-        obs_stats.rename(columns={"stn": "fake_code"}),
-        on="fake_code",
+        obs_stats.rename(columns={"stn": "real_code"}),
+        on="real_code",
         how="left",
     )
 
@@ -139,8 +140,8 @@ def evaluate_recovery(
         rec_dec = _float_or_nan(row.get("mean_dec_arcsec"))
         rms_ra = _float_or_nan(row.get("rms_ra_arcsec"))
         rms_dec = _float_or_nan(row.get("rms_dec_arcsec"))
-        n_obs = int(row.get("n_obs", 0) or 0)
-        n_objects = int(row.get("n_objects", 0) or 0)
+        n_obs = _int_or_zero(row.get("n_obs"))
+        n_objects = _int_or_zero(row.get("n_objects"))
 
         err_ra = injected_ra - rec_ra
         err_dec = injected_dec - rec_dec
@@ -249,6 +250,17 @@ def print_recovery_summary(recovery_df: pd.DataFrame) -> None:
         f"({100 * n_det_dec / max(n_total, 1):.0f}%)"
     )
     print()
+
+
+def _int_or_zero(val) -> int:
+    """Convert a value to int, returning 0 if missing, NaN, or non-finite."""
+    if val is None:
+        return 0
+    try:
+        f = float(val)
+        return 0 if not np.isfinite(f) else int(f)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _float_or_nan(val) -> float:

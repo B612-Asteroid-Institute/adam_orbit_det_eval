@@ -379,7 +379,8 @@ def generate_synthetic_observations(
     out_dec = np.full(n_filtered, np.nan)
     out_rmsra = np.full(n_filtered, np.nan)
     out_rmsdec = np.full(n_filtered, np.nan)
-    out_fake_stn = np.empty(n_filtered, dtype=object)
+    out_real_stn = np.empty(n_filtered, dtype=object)
+    out_fake_stn = np.empty(n_filtered, dtype=object)  # for obsid labeling only
     out_astcat = np.empty(n_filtered, dtype=object)
     valid = np.zeros(n_filtered, dtype=bool)
 
@@ -456,7 +457,8 @@ def generate_synthetic_observations(
         out_dec[rc_indices] = syn_dec
         out_rmsra[rc_indices] = sigma_ra_arr  # sigma_ra is cos-dec corrected
         out_rmsdec[rc_indices] = sigma_dec_arr
-        out_fake_stn[rc_indices] = fobs.fake_code
+        out_real_stn[rc_indices] = rc           # real code for SPICE lookup
+        out_fake_stn[rc_indices] = fobs.fake_code  # fake code for obsid label
         out_astcat[rc_indices] = fobs.astcat
         valid[rc_indices] = True
 
@@ -471,6 +473,7 @@ def generate_synthetic_observations(
         out_dec = out_dec[valid]
         out_rmsra = out_rmsra[valid]
         out_rmsdec = out_rmsdec[valid]
+        out_real_stn = out_real_stn[valid]
         out_fake_stn = out_fake_stn[valid]
         out_astcat = out_astcat[valid]
 
@@ -529,7 +532,7 @@ def generate_synthetic_observations(
                 "mag": _col("mag"),
                 "rmsmag": _col("rmsmag"),
                 "band": _str_col("band"),
-                "stn": pa.array(out_fake_stn.tolist(), type=pa.large_utf8()),
+                "stn": pa.array(out_real_stn.tolist(), type=pa.large_utf8()),
                 "updated_at": now_ts_struct,
                 "created_at": now_ts_struct,
                 "status": pa.array(["P"] * n_out, type=pa.large_utf8()),

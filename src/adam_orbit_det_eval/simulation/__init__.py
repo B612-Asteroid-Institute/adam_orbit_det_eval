@@ -23,7 +23,7 @@ dataset:
     SimulationConfig, SimulationDataset
 
 evaluate:
-    evaluate_recovery, StationRecovery
+    evaluate_recovery, print_recovery_summary, StationRecovery
 """
 
 from .bias_models import (
@@ -48,7 +48,7 @@ from .bias_models import (
     WrongSiteBias,
 )
 from .dataset import SimulationConfig, SimulationDataset
-from .evaluate import StationRecovery, evaluate_recovery
+from .evaluate import StationRecovery, evaluate_recovery, print_recovery_summary
 from .noise_model import NoiseModel
 from .observatory_map import FakeObservatory, ObservatoryMap
 from .synthetic_obs import generate_synthetic_observations
@@ -87,4 +87,5 @@ __all__ = [
     # evaluate
     "StationRecovery",
     "evaluate_recovery",
+    "print_recovery_summary",
 ]

@@ -134,6 +134,12 @@ def parse_args():
         default=100.0,
         help="Exclude rows with hold-in reduced-chi2 > threshold (default: 100.0).",
     )
+    p.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Delete cached pipeline inputs and checkpoints before running.",
+    )
     return p.parse_args()
 
 
@@ -141,16 +147,10 @@ def get_propagator_class(name: str):
     """Return the propagator class for the given name."""
     if name == "twobody":
         try:
-            from adam_core.dynamics.propagation import propagate_2body
-            from adam_core.propagator.propagator import Propagator
-
-            class TwoBodyPropagator(Propagator):
-                def _propagate_orbits(self, orbits, times, max_iter=1000, tol=1e-14, **kwargs):
-                    return propagate_2body(orbits, times, max_iter=max_iter, tol=tol)
-
+            from adam_orbit_det_eval.propagators import TwoBodyPropagator
             return TwoBodyPropagator
         except Exception as e:
-            logger.error(f"Could not set up TwoBodyPropagator: {e}")
+            logger.error(f"Could not import TwoBodyPropagator: {e}")
             sys.exit(1)
     elif name == "assist":
         try:
@@ -167,6 +167,18 @@ def get_propagator_class(name: str):
 
 def run_looo_step(args, dataset_dir: Path, looo_output_dir: Path):
     """Run the LOOO pipeline on the synthetic dataset."""
+    import shutil
+    if args.force and looo_output_dir.exists():
+        for cached in ["_obs_input.parquet", "_orbits_input.parquet", "looo_results.parquet"]:
+            p = looo_output_dir / cached
+            if p.exists():
+                p.unlink()
+                logger.info(f"Force: deleted cached {cached}")
+        ckpt_dir = looo_output_dir / "checkpoints"
+        if ckpt_dir.exists():
+            shutil.rmtree(ckpt_dir)
+            logger.info(f"Force: deleted checkpoint directory {ckpt_dir}")
+
     obs_path = dataset_dir / "mpc_observations.parquet"
     orbits_path = dataset_dir / "mpc_orbits.parquet"
 

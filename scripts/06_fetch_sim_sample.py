@@ -149,21 +149,14 @@ def build_sample_query(
     elif sample_type == "mba":
         type_filter = "AND q / (1 - e) BETWEEN 2.0 AND 3.3 AND e < 0.3"
 
-    # arc_length_years is not always a direct column; approximate via
-    # (last_obs_jd - first_obs_jd) / 365.25 if available, otherwise use
-    # nobs_total as a proxy proxy.  The BQ MPC schema uses first_obs and last_obs
-    # as string dates (YYYY-MM-DD).
+    # The BQ MPC schema has arc_length_total in days directly.
     min_arc_days = int(min_arc_years * 365.25)
 
     return f"""
 SELECT unpacked_primary_provisional_designation AS provid
 FROM `{project}.{dataset_id}.public_mpc_orbits`
 WHERE nobs_total >= {min_total_obs}
-  AND DATE_DIFF(
-        PARSE_DATE('%Y-%m-%d', last_obs),
-        PARSE_DATE('%Y-%m-%d', first_obs),
-        DAY
-      ) >= {min_arc_days}
+  AND arc_length_total >= {min_arc_days}
   {type_filter}
 ORDER BY FARM_FINGERPRINT(CONCAT(unpacked_primary_provisional_designation, CAST({seed} AS STRING)))
 LIMIT {n_objects + 50}

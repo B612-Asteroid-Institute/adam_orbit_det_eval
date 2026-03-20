@@ -23,6 +23,128 @@ logger = logging.getLogger(__name__)
 # MJD epoch offset (J2000 → MJD is 51544.5; not used here directly)
 _DAYS_PER_YEAR = 365.25
 
+# ---------------------------------------------------------------------------
+# Hardcoded geodetic coordinates (lat_deg, lon_deg) for Phase 1 stations.
+# Longitude is East-positive; latitude is geodetic.
+# Used as fallback when no MPC ObsCodes catalog is available.
+# ---------------------------------------------------------------------------
+_MPC_GEODETIC: Dict[str, Tuple[float, float]] = {
+    "F51": (20.7073, -156.2573),   # Pan-STARRS 1, Haleakala
+    "F52": (20.7073, -156.2573),   # Pan-STARRS 2, Haleakala (same site)
+    "G96": (32.4428, -110.7885),   # Mt. Lemmon Survey
+    "703": (32.4428, -110.7885),   # Catalina Sky Survey (same mountain)
+    "691": (31.6814, -110.8779),   # Spacewatch, Kitt Peak
+    "W84": (-24.6157, -70.1920),   # Cerro Tololo, Chile
+    "568": (33.3564, -116.8650),   # Mauna Kea (Palomar)
+    "T09": (-31.2722, -70.7378),   # ATLAS Chile, El Sauce
+    "V00": (-24.6157, -70.1920),   # Cerro Tololo-DECam
+    "X05": (-30.2407, -70.7366),   # Cerro Pachon, Rubin/LSST
+    "T05": (19.8333, -155.4750),   # ATLAS Mauna Loa
+    "I41": (-31.2722, -70.7378),   # El Sauce
+    "W68": (-29.0056, -70.7389),   # Las Cumbres 1m
+    "O18": (-22.5340, -68.1767),   # Atacama
+}
+
+
+def _get_site_geodetic(real_code: str) -> Optional[Tuple[float, float]]:
+    """
+    Return geodetic (lat_deg, lon_deg) for a real MPC station code.
+
+    Looks up the hardcoded Phase 1 station table.  Returns ``None`` if the
+    code is not found.
+
+    Parameters
+    ----------
+    real_code : str
+        MPC observatory code (e.g. ``"F51"``).
+
+    Returns
+    -------
+    (lat_deg, lon_deg) or None
+        Geodetic latitude and East-positive longitude in degrees, or ``None``
+        if the code is unknown.
+    """
+    return _MPC_GEODETIC.get(real_code, None)
+
+
+def _compute_obs_geometry(
+    ra_deg: np.ndarray,
+    dec_deg: np.ndarray,
+    obstime_mjd: np.ndarray,
+    site_lat_deg: float,
+    site_lon_deg: float,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Compute zenith angle, parallactic angle, and approximate object rate.
+
+    Parameters
+    ----------
+    ra_deg, dec_deg : ndarray
+        Topocentric RA/Dec of the object in degrees.
+    obstime_mjd : ndarray
+        Observation times in MJD (UTC).
+    site_lat_deg, site_lon_deg : float
+        Observer geodetic latitude and East-positive longitude in degrees.
+
+    Returns
+    -------
+    (zenith_angle_deg, parallactic_angle_deg, object_rate_arcsec_per_hour)
+        All three are 1-D arrays of the same length as *ra_deg*.
+    """
+    lat_rad = np.deg2rad(site_lat_deg)
+    dec_rad = np.deg2rad(dec_deg)
+    ra_rad = np.deg2rad(ra_deg)
+
+    # GMST in radians (IAU 1982 approximation, accurate to ~0.1" over decades)
+    # JD_UTC ≈ MJD + 2400000.5
+    jd_utc = obstime_mjd + 2400000.5
+    T = (jd_utc - 2451545.0) / 36525.0  # Julian centuries from J2000
+    gmst_deg = (
+        280.46061837
+        + 360.98564736629 * (jd_utc - 2451545.0)
+        + 0.000387933 * T**2
+        - T**3 / 38710000.0
+    )
+    gmst_rad = np.deg2rad(gmst_deg % 360.0)
+
+    # Local Sidereal Time
+    lst_rad = (gmst_rad + np.deg2rad(site_lon_deg)) % (2 * np.pi)
+
+    # Hour angle
+    ha_rad = (lst_rad - ra_rad) % (2 * np.pi)
+
+    # Zenith angle: cos(z) = sin(φ)sin(δ) + cos(φ)cos(δ)cos(H)
+    cos_z = (
+        np.sin(lat_rad) * np.sin(dec_rad)
+        + np.cos(lat_rad) * np.cos(dec_rad) * np.cos(ha_rad)
+    )
+    cos_z = np.clip(cos_z, -1.0, 1.0)
+    zenith_angle_deg = np.degrees(np.arccos(cos_z))
+
+    # Parallactic angle: q = atan2(sin(H)*cos(φ), sin(φ)*cos(δ) - cos(φ)*sin(δ)*cos(H))
+    sin_q = np.sin(ha_rad) * np.cos(lat_rad)
+    cos_q = (
+        np.sin(lat_rad) * np.cos(dec_rad)
+        - np.cos(lat_rad) * np.sin(dec_rad) * np.cos(ha_rad)
+    )
+    parallactic_angle_deg = np.degrees(np.arctan2(sin_q, cos_q))
+
+    # Object rate: approximate from RA/Dec change between adjacent observations.
+    # Use finite differences; endpoints use one-sided differences.
+    if len(ra_deg) >= 2:
+        dt_hours = np.gradient(obstime_mjd) * 24.0
+        dra = np.gradient(ra_deg) * np.cos(dec_rad) * 3600.0  # arcsec
+        ddec = np.gradient(dec_deg) * 3600.0  # arcsec
+        with np.errstate(divide="ignore", invalid="ignore"):
+            rate = np.sqrt(dra**2 + ddec**2) / np.where(
+                np.abs(dt_hours) > 1e-10, np.abs(dt_hours), np.nan
+            )
+        rate = np.where(np.isfinite(rate), rate, 0.0)
+    else:
+        rate = np.zeros_like(ra_deg)
+
+    return zenith_angle_deg, parallactic_angle_deg, rate
+
 
 # ---------------------------------------------------------------------------
 # Truth ephemeris generation
@@ -291,11 +413,27 @@ def generate_synthetic_observations(
         # Bias apply
         obs_mag = filtered_mags[rc_mask]
         bias_model = fobs.compound_bias
+
+        # Compute observing geometry for this site so zenith-angle-dependent
+        # bias models (DCRBias, RefractionModelError, TrailingBias) receive
+        # real values instead of None.
+        site_geodetic = _get_site_geodetic(rc)
+        if site_geodetic is not None:
+            lat_deg, lon_deg = site_geodetic
+            zenith_ang, parallactic_ang, obj_rate = _compute_obs_geometry(
+                ra_true, dec_true, ephem_mjds, lat_deg, lon_deg
+            )
+        else:
+            zenith_ang = parallactic_ang = obj_rate = None
+
         d_ra_cosdec, d_dec = bias_model.apply(
             ra=ra_true,
             dec=dec_true,
             obstime=ephem_mjds,
             mag=obs_mag if np.any(np.isfinite(obs_mag)) else None,
+            zenith_angle=zenith_ang,
+            parallactic_angle=parallactic_ang,
+            object_rate=obj_rate,
         )
 
         # Total offset in arcsec (noise + bias), both in cos(dec)-corrected frame
@@ -343,7 +481,6 @@ def generate_synthetic_observations(
     # 4. Build MPCObservations output table
     # ------------------------------------------------------------------
     n_out = len(out_ra)
-    now_ts = _now_timestamp()
 
     # Generate unique obs IDs
     obj_safe = (object_id or "obj").replace("/", "_").replace(" ", "_")

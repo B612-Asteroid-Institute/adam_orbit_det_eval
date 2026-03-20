@@ -546,10 +546,23 @@ class MagnitudeDependentBias(BiasModel):
 
 class ColorDependentBias(BiasModel):
     """
-    Catalog color term error, linear in B-V color.
+    Catalog color term error, linear in a relative color proxy.
 
-    When color is unavailable, uses mag as a proxy (relative to ref_color=0.6
-    which corresponds roughly to the median B-V for the reference catalog).
+    Uses apparent magnitude as a *relative* proxy for object color.  Only the
+    differential matters (brighter/fainter relative to the median), so the bias
+    is computed as::
+
+        dc = mag - median(mag)
+        d_ra  = slope_ra  * dc
+        d_dec = slope_dec * dc
+
+    This avoids the physically unsound ``mag/20`` proxy previously used.
+    Brighter minor planets (lower mag) tend to be larger; the sign of the slope
+    encodes the direction of the color term for the specific catalog and filter.
+
+    When ``mag`` is ``None`` or all-NaN, a warning is logged and zero bias is
+    returned.  The ``ref_color`` parameter is retained for API compatibility but
+    is no longer used in the calculation.
     """
 
     def __init__(
@@ -560,19 +573,28 @@ class ColorDependentBias(BiasModel):
     ) -> None:
         self.slope_ra = float(slope_ra)
         self.slope_dec = float(slope_dec)
-        self.ref_color = float(ref_color)
+        self.ref_color = float(ref_color)  # kept for API compatibility
 
     def apply(self, ra, dec, obstime, mag=None, zenith_angle=None,
               parallactic_angle=None, object_rate=None, field_ra=None,
               field_dec=None) -> _BiasResult:
-        # Use mag as a proxy for colour (rough approximation: colour ≈ mag/20)
         if mag is None:
             logger.warning(
-                "ColorDependentBias requires mag as colour proxy; returning zero bias."
+                "ColorDependentBias requires mag as color proxy; returning zero."
             )
             return _zeros_like(ra)
-        color_proxy = np.asarray(mag, dtype=float) / 20.0
-        dc = color_proxy - self.ref_color
+        mag_arr = np.asarray(mag, dtype=float)
+        valid = np.isfinite(mag_arr)
+        if not valid.any():
+            logger.warning(
+                "ColorDependentBias: all mag values are NaN; returning zero."
+            )
+            return _zeros_like(ra)
+        # Differential color proxy: relative to the median magnitude of this
+        # observation set.  Only the *difference* from median carries physical
+        # meaning as a color stand-in.
+        ref_mag = np.nanmedian(mag_arr)
+        dc = mag_arr - ref_mag
         return self.slope_ra * dc, self.slope_dec * dc
 
     def params_dict(self) -> dict:
@@ -654,9 +676,22 @@ class StepChangeBias(BiasModel):
 
 class NightlyDrift(BiasModel):
     """
-    Linear drift within each UTC night, resetting at midnight.
+    Linear drift within each UTC night, centred on the middle of astronomical
+    night.
 
-    Hours are computed from UTC midnight of each observation.
+    Hours are computed from UTC midnight of each observation, then shifted so
+    that observations at the centre of a typical astronomical night (01:00 UTC,
+    i.e. roughly midway between evening twilight ~19:00 and morning twilight
+    ~07:00) produce zero offset.  This means a station with a non-zero slope
+    sees near-zero *mean* bias across a night (the LOOO will not detect a
+    spurious constant offset), but has increasing scatter with observation time
+    within each night.
+
+    The centering formula is::
+
+        hours_from_center = (hours_utc - 1.0 + 12.0) % 24.0 - 12.0
+
+    which maps 01:00 UTC → 0.0, 19:00 UTC → -6.0, and 07:00 UTC → +6.0.
     """
 
     def __init__(self, slope_ra_per_hour: float, slope_dec_per_hour: float) -> None:
@@ -666,13 +701,14 @@ class NightlyDrift(BiasModel):
     def apply(self, ra, dec, obstime, mag=None, zenith_angle=None,
               parallactic_angle=None, object_rate=None, field_ra=None,
               field_dec=None) -> _BiasResult:
-        # MJD fractional day: 0.0 = midnight UTC
-        hours_since_midnight = (obstime % 1.0) * 24.0
-        # Observations after midnight wrap: times in [0, 12) are early morning,
-        # [12, 24) are evening/night — but astronomers observe mostly in the
-        # negative hours from midnight; we keep it simple and use the raw frac.
-        d_ra = self.slope_ra_per_hour * hours_since_midnight
-        d_dec = self.slope_dec_per_hour * hours_since_midnight
+        # Hours since midnight UTC (MJD fractional day × 24)
+        hours_utc = (obstime % 1.0) * 24.0
+        # Astronomical night is roughly 19–07 UTC; centre at 01:00 UTC.
+        # Shift so that centre-of-night (01:00) maps to 0, keeping the range
+        # symmetric within ±12 hours.
+        hours_from_center = (hours_utc - 1.0 + 12.0) % 24.0 - 12.0
+        d_ra = self.slope_ra_per_hour * hours_from_center
+        d_dec = self.slope_dec_per_hour * hours_from_center
         return d_ra, d_dec
 
     def params_dict(self) -> dict:
@@ -694,6 +730,12 @@ class ReportingTruncation(BiasModel):
     ``precision_arcsec`` is the rounding step in arcseconds.  The bias is the
     difference between the rounded and true position; its expectation is zero
     but it adds a discrete noise component.
+
+    Implementation note: this class rounds the *true* position rather than the
+    final noise+bias-perturbed position.  Because the rounding step (~0.01–0.1
+    arcsec) is much smaller than typical Gaussian noise (~0.1–0.5 arcsec), the
+    quantisation effect on the total residual is statistically equivalent either
+    way.  The implementation is therefore left as-is.
     """
 
     def __init__(self, precision_arcsec: float) -> None:

@@ -346,8 +346,10 @@ class DCRBias(BiasModel):
     Requires zenith_angle and parallactic_angle.
     """
 
-    # Approximate constant: K = n0*(dn/dλ)*... ≈ 2.44e7 arcsec·nm²
-    K = 2.44e7  # arcsec·nm²
+    # K = 206265 * (n₀ - 1) * C_Cauchy  where (n₀-1) ≈ 2.91e-4 (standard atm.)
+    # and C_Cauchy ≈ 7520 nm² (Filippenko 1982, converted from μm² to nm²).
+    # K ≈ 206265 × 2.91e-4 × 7520 ≈ 4.5e5 arcsec·nm²
+    K = 4.5e5  # arcsec·nm²
 
     def __init__(
         self,

@@ -424,43 +424,84 @@ def generate_synthetic_observations(
             zenith_ang, parallactic_ang, obj_rate = _compute_obs_geometry(
                 ra_true, dec_true, ephem_mjds, lat_deg, lon_deg
             )
+            # Filter out below-horizon observations (z ≥ 90°).
+            # These arise from MPC data quality issues (wrong station code at
+            # epoch, daytime observations, etc.) and would cause DCRBias /
+            # RefractionModelError to receive tan(z) values clipped to
+            # tan(85°) ≈ 11.4, producing a spurious multi-arcsec systematic.
+            horizon_ok = zenith_ang < 90.0
+            if not np.all(horizon_ok):
+                n_below = (~horizon_ok).sum()
+                logger.warning(
+                    f"{rc}: dropping {n_below}/{len(rc_indices)} below-horizon "
+                    f"template observations (z ≥ 90°)."
+                )
+                # Mask out invalid observations: mark as not valid so they
+                # are dropped from the output.
+                valid[rc_indices[~horizon_ok]] = False
+                # Restrict arrays to horizon_ok subset for bias computation
+                ra_true_ok = ra_true[horizon_ok]
+                dec_true_ok = dec_true[horizon_ok]
+                ephem_mjds_ok = ephem_mjds[horizon_ok]
+                zenith_ang = zenith_ang[horizon_ok]
+                parallactic_ang = parallactic_ang[horizon_ok]
+                obj_rate = obj_rate[horizon_ok]
+                obs_mag_ok = obs_mag[horizon_ok]
+                noise_ra_ok = noise_ra[horizon_ok]
+                noise_dec_ok = noise_dec[horizon_ok]
+                rc_indices_ok = rc_indices[horizon_ok]
+            else:
+                ra_true_ok = ra_true
+                dec_true_ok = dec_true
+                ephem_mjds_ok = ephem_mjds
+                obs_mag_ok = obs_mag
+                noise_ra_ok = noise_ra
+                noise_dec_ok = noise_dec
+                rc_indices_ok = rc_indices
         else:
             zenith_ang = parallactic_ang = obj_rate = None
+            ra_true_ok = ra_true
+            dec_true_ok = dec_true
+            ephem_mjds_ok = ephem_mjds
+            obs_mag_ok = obs_mag
+            noise_ra_ok = noise_ra
+            noise_dec_ok = noise_dec
+            rc_indices_ok = rc_indices
 
         d_ra_cosdec, d_dec = bias_model.apply(
-            ra=ra_true,
-            dec=dec_true,
-            obstime=ephem_mjds,
-            mag=obs_mag if np.any(np.isfinite(obs_mag)) else None,
+            ra=ra_true_ok,
+            dec=dec_true_ok,
+            obstime=ephem_mjds_ok,
+            mag=obs_mag_ok if np.any(np.isfinite(obs_mag_ok)) else None,
             zenith_angle=zenith_ang,
             parallactic_angle=parallactic_ang,
             object_rate=obj_rate,
         )
 
         # Total offset in arcsec (noise + bias), both in cos(dec)-corrected frame
-        total_ra_offset_arcsec = noise_ra + d_ra_cosdec  # Δα·cos(δ) in arcsec
-        total_dec_offset_arcsec = noise_dec + d_dec       # Δδ in arcsec
+        total_ra_offset_arcsec = noise_ra_ok + d_ra_cosdec  # Δα·cos(δ) in arcsec
+        total_dec_offset_arcsec = noise_dec_ok + d_dec       # Δδ in arcsec
 
         # Convert back to degrees
-        dec_rad = np.deg2rad(dec_true)
+        dec_rad = np.deg2rad(dec_true_ok)
         cos_dec = np.cos(dec_rad)
         # Guard against dec ≈ ±90°
         safe_cos = np.where(np.abs(cos_dec) > 1e-10, cos_dec, 1e-10)
 
-        syn_ra = ra_true + (total_ra_offset_arcsec / safe_cos) / 3600.0
-        syn_dec = dec_true + total_dec_offset_arcsec / 3600.0
+        syn_ra = ra_true_ok + (total_ra_offset_arcsec / safe_cos) / 3600.0
+        syn_dec = dec_true_ok + total_dec_offset_arcsec / 3600.0
 
         # Wrap RA to [0, 360)
         syn_ra = syn_ra % 360.0
 
-        out_ra[rc_indices] = syn_ra
-        out_dec[rc_indices] = syn_dec
-        out_rmsra[rc_indices] = sigma_ra_arr  # sigma_ra is cos-dec corrected
-        out_rmsdec[rc_indices] = sigma_dec_arr
-        out_real_stn[rc_indices] = rc           # real code for SPICE lookup
-        out_fake_stn[rc_indices] = fobs.fake_code  # fake code for obsid label
-        out_astcat[rc_indices] = fobs.astcat
-        valid[rc_indices] = True
+        out_ra[rc_indices_ok] = syn_ra
+        out_dec[rc_indices_ok] = syn_dec
+        out_rmsra[rc_indices_ok] = fobs.noise_sigma_ra   # scalar broadcast
+        out_rmsdec[rc_indices_ok] = fobs.noise_sigma_dec
+        out_real_stn[rc_indices_ok] = rc           # real code for SPICE lookup
+        out_fake_stn[rc_indices_ok] = fobs.fake_code  # fake code for obsid label
+        out_astcat[rc_indices_ok] = fobs.astcat
+        valid[rc_indices_ok] = True
 
     # Drop observations for which we have no ephemeris
     if not valid.all():

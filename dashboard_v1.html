@@ -1,0 +1,1186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ADAM Orbit Determination Evaluation Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #f4f6f9;
+    color: #1a1a2e;
+    line-height: 1.6;
+  }
+
+  header {
+    background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
+    color: #e8eaf6;
+    padding: 32px 40px;
+    border-bottom: 3px solid #4fc3f7;
+  }
+  header h1 {
+    font-size: 2rem;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    color: #ffffff;
+  }
+  header p {
+    margin-top: 8px;
+    font-size: 1rem;
+    color: #b0bec5;
+    max-width: 900px;
+  }
+  header .meta {
+    margin-top: 12px;
+    font-size: 0.85rem;
+    color: #78909c;
+  }
+  header .badge {
+    display: inline-block;
+    background: #1565c0;
+    color: #e3f2fd;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 0.78rem;
+    margin-right: 6px;
+    margin-top: 4px;
+    font-weight: 500;
+  }
+
+  .container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 0 24px 60px;
+  }
+
+  .section {
+    margin-top: 48px;
+  }
+
+  .section-header {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    margin-bottom: 20px;
+    border-bottom: 2px solid #e0e4ea;
+    padding-bottom: 12px;
+  }
+  .section-header h2 {
+    font-size: 1.35rem;
+    font-weight: 700;
+    color: #0d1b2a;
+  }
+  .section-header .section-num {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #4fc3f7;
+    background: #0d1b2a;
+    border-radius: 50%;
+    width: 26px;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .section-desc {
+    font-size: 0.9rem;
+    color: #546e7a;
+    margin-bottom: 18px;
+    max-width: 900px;
+  }
+
+  .card {
+    background: #fff;
+    border-radius: 10px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+    padding: 24px;
+    border: 1px solid #e5e9f0;
+  }
+
+  .chart-scroll {
+    overflow-y: scroll;
+    height: 500px;
+    border: 1px solid #e5e9f0;
+    border-radius: 8px;
+    background: #fff;
+    padding: 16px;
+  }
+
+  .legend-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.82rem;
+    color: #444;
+  }
+  .legend-swatch {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.875rem;
+  }
+  th {
+    background: #1b2838;
+    color: #e8eaf6;
+    padding: 10px 14px;
+    text-align: left;
+    font-weight: 600;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
+  td {
+    padding: 9px 14px;
+    border-bottom: 1px solid #edf0f5;
+    vertical-align: middle;
+  }
+  tr:nth-child(even) td { background: #f8f9fb; }
+  tr:hover td { background: #eef4ff; }
+
+  .mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.82rem; }
+
+  .badge-green { background: #e8f5e9; color: #2e7d32; padding: 2px 8px; border-radius: 4px; font-weight: 600; font-size: 0.8rem; }
+  .badge-red { background: #ffebee; color: #c62828; padding: 2px 8px; border-radius: 4px; font-weight: 600; font-size: 0.8rem; }
+  .badge-grey { background: #eceff1; color: #546e7a; padding: 2px 8px; border-radius: 4px; font-weight: 600; font-size: 0.8rem; }
+  .badge-yellow { background: #fff8e1; color: #e65100; padding: 2px 8px; border-radius: 4px; font-weight: 600; font-size: 0.8rem; }
+
+  .heatmap-table th, .heatmap-table td {
+    text-align: center;
+    padding: 6px 8px;
+    font-size: 0.78rem;
+  }
+  .heatmap-table td.stn-label {
+    text-align: left;
+    font-weight: 600;
+    background: #f0f4fa;
+    color: #1b2838;
+  }
+  .cell-detected { background: #c8e6c9; color: #1b5e20; font-weight: 700; }
+  .cell-not-detected { background: #ffcdd2; color: #b71c1c; font-weight: 700; }
+  .cell-clean { background: #cfd8dc; color: #37474f; font-weight: 600; }
+  .cell-na { background: #f5f5f5; color: #9e9e9e; }
+
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+  }
+  @media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
+
+  .stat-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-bottom: 18px;
+  }
+  .stat-box {
+    background: #f0f4ff;
+    border: 1px solid #c5d5f5;
+    border-radius: 8px;
+    padding: 12px 20px;
+    min-width: 130px;
+  }
+  .stat-box .label { font-size: 0.78rem; color: #5c6bc0; text-transform: uppercase; letter-spacing: 0.05em; }
+  .stat-box .value { font-size: 1.5rem; font-weight: 700; color: #1a237e; margin-top: 2px; }
+
+  .note {
+    font-size: 0.82rem;
+    color: #607d8b;
+    margin-top: 10px;
+    font-style: italic;
+  }
+
+  .callout {
+    background: #e3f2fd;
+    border-left: 4px solid #1565c0;
+    padding: 12px 16px;
+    border-radius: 0 8px 8px 0;
+    margin-bottom: 18px;
+    font-size: 0.9rem;
+    color: #0d47a1;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>ADAM Orbit Determination Evaluation Dashboard</h1>
+  <p>Isolation study: systematic astrometric bias injection and recovery across 9 simulated observatories (AA00–AA08 → F51/G96/F52/703/691/W84/W68/T09/V00). 100 synthetic asteroid objects, 9 bias types × 9 stations = 81 scenarios.</p>
+  <div class="meta">
+    <span class="badge">TwoBody propagation</span>
+    <span class="badge">ASSIST N-body</span>
+    <span class="badge">9 stations</span>
+    <span class="badge">100 objects</span>
+    <span class="badge">9 bias types</span>
+    <span class="badge">52,619 total observations</span>
+  </div>
+</header>
+
+<div class="container">
+
+<!-- ====== SECTION 1 ====== -->
+<div class="section" id="s1">
+  <div class="section-header">
+    <div class="section-num">1</div>
+    <h2>Per-Object Observation Breakdown (AA00_clean scenario)</h2>
+  </div>
+  <p class="section-desc">
+    Stacked horizontal bar showing observations per synthetic asteroid object (all 100 objects) from the clean scenario, colored by observatory. Objects are sorted by total observation count. Data sourced directly from <code>mpc_observations.parquet</code> via the combined_recovery n_obs totals.
+  </p>
+  <div class="stat-row">
+    <div class="stat-box"><div class="label">Total Obs (clean)</div><div class="value">52,406</div></div>
+    <div class="stat-box"><div class="label">Objects</div><div class="value">100</div></div>
+    <div class="stat-box"><div class="label">Stations</div><div class="value">9</div></div>
+    <div class="stat-box"><div class="label">Largest Station</div><div class="value">G96</div></div>
+  </div>
+  <div class="card">
+    <div class="legend-row" id="s1-legend"></div>
+    <div class="chart-scroll">
+      <canvas id="obsBreakdownChart"></canvas>
+    </div>
+  </div>
+  <p class="note">Each bar segment represents the station's share of observations for that object. Station observation totals from clean scenario: G96=14,710 | F51=11,792 | 703=11,201 | W68=4,780 | F52=6,019 | V00=470 | W84=354 | AA07=76.</p>
+</div>
+
+<!-- ====== SECTION 2 ====== -->
+<div class="section" id="s2">
+  <div class="section-header">
+    <div class="section-num">2</div>
+    <h2>Observatory Configuration</h2>
+  </div>
+  <p class="section-desc">
+    Configuration of all 9 synthetic observatories from <code>truth_biases.csv</code>. The clean scenario has no injected bias; all other scenarios inject a single bias type at one target station while others observe normally.
+  </p>
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th>Fake Code</th>
+          <th>Real Code</th>
+          <th>Astrometric Catalog</th>
+          <th>Noise σ RA (arcsec)</th>
+          <th>Noise σ Dec (arcsec)</th>
+          <th>Bias Type (clean)</th>
+          <th>Total Obs (clean)</th>
+          <th>Objects Detected</th>
+        </tr>
+      </thead>
+      <tbody id="obs-config-body"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ====== SECTION 3 ====== -->
+<div class="section" id="s3">
+  <div class="section-header">
+    <div class="section-num">3</div>
+    <h2>Phase 1 TwoBody LOOO Recovery — Per-Station Bias Detection</h2>
+  </div>
+  <p class="section-desc">
+    For each target station (AA00–AA08), this shows the recovered mean RA bias (arcsec) in the constant-bias scenario (+0.5") versus the clean scenario. Left chart: recovered RA bias for the injected station (should be near +0.5" when detected). Right chart: detection SNR in RA for the target station's constant-bias scenario.
+  </p>
+  <div class="grid-2">
+    <div class="card">
+      <h3 style="font-size:1rem;margin-bottom:14px;color:#1b2838;">Recovered Mean RA Bias — Constant (+0.5") vs Clean</h3>
+      <div style="position:relative;height:200px;"><canvas id="recoveryCompareChart"></canvas></div>
+    </div>
+    <div class="card">
+      <h3 style="font-size:1rem;margin-bottom:14px;color:#1b2838;">Detection SNR (RA) — Constant Bias Scenario, Target Station</h3>
+      <div style="position:relative;height:200px;"><canvas id="detectionSnrChart"></canvas></div>
+    </div>
+  </div>
+  <div class="card" style="margin-top:20px;">
+    <h3 style="font-size:1rem;margin-bottom:14px;color:#1b2838;">Per-Station Recovery Table — All Bias Types (Target Rows Only)</h3>
+    <div style="overflow-x:auto;max-height:360px;overflow-y:auto;">
+    <table id="recovery-table">
+      <thead>
+        <tr>
+          <th>Station</th>
+          <th>Real Code</th>
+          <th>Bias Type</th>
+          <th>Injected RA (arcsec)</th>
+          <th>Injected Dec (arcsec)</th>
+          <th>Recovered RA (arcsec)</th>
+          <th>Recovered Dec (arcsec)</th>
+          <th>Recovery Error RA</th>
+          <th>SNR RA</th>
+          <th>SNR Dec</th>
+          <th>Detected RA</th>
+          <th>Detected Dec</th>
+          <th>N obs</th>
+        </tr>
+      </thead>
+      <tbody id="recovery-table-body"></tbody>
+    </table>
+    </div>
+  </div>
+</div>
+
+<!-- ====== SECTION 4 ====== -->
+<div class="section" id="s4">
+  <div class="section-header">
+    <div class="section-num">4</div>
+    <h2>G96 Cross-Contamination Analysis</h2>
+  </div>
+  <p class="section-desc">
+    When G96 (AA01) has a +0.5" constant RA bias injected (AA01_constant scenario), other stations' residuals shift due to the global fit absorbing part of the bias. This chart shows the <em>shift</em> in recovered mean RA for each non-target station between the AA01_constant and AA01_clean scenarios. A positive shift means the station appears biased high when G96 is biased.
+  </p>
+  <div class="grid-2">
+    <div class="card">
+      <h3 style="font-size:1rem;margin-bottom:14px;color:#1b2838;">RA Contamination Shift per Station (AA01_constant − AA01_clean)</h3>
+      <div style="position:relative;height:200px;"><canvas id="contaminationChart"></canvas></div>
+    </div>
+    <div class="card">
+      <h3 style="font-size:1rem;margin-bottom:14px;color:#1b2838;">Dec Contamination Shift per Station</h3>
+      <div style="position:relative;height:200px;"><canvas id="contaminationDecChart"></canvas></div>
+    </div>
+  </div>
+  <div class="card" style="margin-top:20px;">
+    <div style="overflow-x:auto;">
+    <table>
+      <thead>
+        <tr>
+          <th>Station</th>
+          <th>Real Code</th>
+          <th>Recovered RA (clean)</th>
+          <th>Recovered RA (AA01_constant)</th>
+          <th>RA Shift (arcsec)</th>
+          <th>Recovered Dec (clean)</th>
+          <th>Recovered Dec (AA01_constant)</th>
+          <th>Dec Shift (arcsec)</th>
+          <th>N obs</th>
+        </tr>
+      </thead>
+      <tbody id="contamination-table-body"></tbody>
+    </table>
+    </div>
+    <p class="note">Stations with larger RA contamination shifts are more susceptible to cross-contamination from G96 biases. All non-target stations had no injected bias in both scenarios.</p>
+  </div>
+</div>
+
+<!-- ====== SECTION 5 ====== -->
+<div class="section" id="s5">
+  <div class="section-header">
+    <div class="section-num">5</div>
+    <h2>Isolation Study Detection Matrix</h2>
+  </div>
+  <p class="section-desc">
+    Full heatmap showing whether each bias type was detected (detected_ra = True/False) for each target station. Rows = target station (AA00–AA08), columns = bias type. Green = detected in RA, red = not detected, grey = clean baseline. The clean row shows the noise-floor false detection rate.
+  </p>
+  <div class="card">
+    <div style="overflow-x:auto;">
+    <table class="heatmap-table" id="detection-matrix-table">
+      <thead id="detection-matrix-head"></thead>
+      <tbody id="detection-matrix-body"></tbody>
+    </table>
+    </div>
+  </div>
+  <div class="grid-2" style="margin-top:20px;">
+    <div class="card">
+      <h3 style="font-size:1rem;margin-bottom:14px;color:#1b2838;">Dec Detection Matrix</h3>
+      <div style="overflow-x:auto;">
+      <table class="heatmap-table">
+        <thead id="det-dec-head"></thead>
+        <tbody id="det-dec-body"></tbody>
+      </table>
+      </div>
+    </div>
+    <div class="card">
+      <h3 style="font-size:1rem;margin-bottom:14px;color:#1b2838;">Detection Summary by Station</h3>
+      <div style="position:relative;height:200px;"><canvas id="detectionSummaryChart"></canvas></div>
+    </div>
+  </div>
+</div>
+
+<!-- ====== SECTION 6 ====== -->
+<div class="section" id="s6">
+  <div class="section-header">
+    <div class="section-num">6</div>
+    <h2>Propagation Floor — Clean Scenario Residuals &amp; Phase 1 ASSIST</h2>
+  </div>
+  <p class="section-desc">
+    The clean scenarios (injected bias = 0) reveal the noise floor: residual mean biases due to propagation model mismatch, astrometric catalogue errors, and statistical noise. Comparing TwoBody clean residuals vs. ASSIST (N-body) provides a propagation floor estimate. The ASSIST column uses real phase1_assist <code>observatory_stats.parquet</code> (N-body with full perturbations).
+  </p>
+  <div class="stat-row">
+    <div class="stat-box"><div class="label">ASSIST RMS RA (best)</div><div class="value">0.19"</div></div>
+    <div class="stat-box"><div class="label">ASSIST RMS RA (worst)</div><div class="value">3.72"</div></div>
+    <div class="stat-box"><div class="label">TwoBody floor (typical)</div><div class="value">~0.03"</div></div>
+    <div class="stat-box"><div class="label">Max chi2/obs (ASSIST)</div><div class="value">113.8</div></div>
+  </div>
+  <div class="grid-2">
+    <div class="card">
+      <h3 style="font-size:1rem;margin-bottom:14px;color:#1b2838;">TwoBody Clean: Recovered Mean RA per Station (noise floor)</h3>
+      <div style="position:relative;height:200px;"><canvas id="noiseFloorChart"></canvas></div>
+    </div>
+    <div class="card">
+      <h3 style="font-size:1rem;margin-bottom:14px;color:#1b2838;">ASSIST Phase 1: bias_RA and RMS_RA per Station</h3>
+      <div style="position:relative;height:200px;"><canvas id="assistChart"></canvas></div>
+    </div>
+  </div>
+  <div class="card" style="margin-top:20px;">
+    <h3 style="font-size:1rem;margin-bottom:14px;color:#1b2838;">ASSIST Phase 1 Observatory Statistics (from observatory_stats.parquet)</h3>
+    <div class="callout">
+      V00 (AA08) shows chi2/obs = 113.8 and bias_RA = +3.06", indicating the V00 trailing bias is fully unmodeled in the ASSIST fit. G96 (AA01) has bias_RA = +0.514" matching the injected constant bias. This confirms the Phase 1 ASSIST run used the constant bias injection scenario for G96.
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Station</th>
+          <th>N obs</th>
+          <th>N objects</th>
+          <th>Bias RA (arcsec)</th>
+          <th>Bias Dec (arcsec)</th>
+          <th>RMS RA (arcsec)</th>
+          <th>RMS Dec (arcsec)</th>
+          <th>chi2/obs</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="assist-table-body"></tbody>
+    </table>
+  </div>
+</div>
+
+</div><!-- /container -->
+
+<script>
+// ============================================================
+// EMBEDDED REAL DATA
+// ============================================================
+
+// Station metadata (from truth_biases.csv)
+const STATIONS = [
+  { fake: 'AA00', real: 'F51',  astcat: 'Gaia3E', sigma_ra: 0.15, sigma_dec: 0.15 },
+  { fake: 'AA01', real: 'G96',  astcat: 'Gaia3E', sigma_ra: 0.15, sigma_dec: 0.15 },
+  { fake: 'AA02', real: 'F52',  astcat: 'Gaia3E', sigma_ra: 0.15, sigma_dec: 0.15 },
+  { fake: 'AA03', real: '703',  astcat: 'Gaia2',  sigma_ra: 0.35, sigma_dec: 0.35 },
+  { fake: 'AA04', real: '691',  astcat: 'UCAC4',  sigma_ra: 0.35, sigma_dec: 0.35 },
+  { fake: 'AA05', real: 'W84',  astcat: 'Gaia3E', sigma_ra: 0.20, sigma_dec: 0.20 },
+  { fake: 'AA06', real: 'W68',  astcat: 'Gaia3E', sigma_ra: 0.25, sigma_dec: 0.25 },
+  { fake: 'AA07', real: 'T09',  astcat: 'Gaia3E', sigma_ra: 0.25, sigma_dec: 0.25 },
+  { fake: 'AA08', real: 'V00',  astcat: 'Gaia2',  sigma_ra: 0.35, sigma_dec: 0.35 },
+];
+
+// Clean scenario per-station obs counts and n_objects (from combined_recovery.csv AA00_clean rows)
+const CLEAN_OBS = {
+  AA00: { n_obs: 11792, n_objects: 100 },
+  AA01: { n_obs: 14710, n_objects: 100 },
+  AA02: { n_obs:  6019, n_objects: 100 },
+  AA03: { n_obs: 11201, n_objects:  92 },
+  AA04: { n_obs:  3214, n_objects:  97 },
+  AA05: { n_obs:   354, n_objects:  31 },
+  AA06: { n_obs:  4780, n_objects:  57 },
+  AA07: { n_obs:    76, n_objects:   9 },
+  AA08: { n_obs:   470, n_objects:  66 },
+};
+
+// All 729 recovery rows (target rows only, parsed from combined_recovery.csv)
+// Fields: fake_code, real_code, bias_type, injected_ra, injected_dec,
+//         recovered_ra, recovered_dec, rms_ra, rms_dec, n_obs, n_objects,
+//         recovery_error_ra, detection_snr_ra, detection_snr_dec,
+//         detected_ra, detected_dec, scenario, target_station, applied_bias, is_target
+// Only target rows (is_target=True) extracted below
+
+const TARGET_ROWS = [
+  // AA00 target rows (scenario = AA00_*)
+  { fake:'AA00', real:'F51', scenario:'AA00_clean',    applied_bias:'clean',    bias_type:'None',                   inj_ra:0.0,           inj_dec:0.0,    rec_ra:0.03271,   rec_dec:-0.00059,  snr_ra:0.0,          snr_dec:0.0,          det_ra:true,  det_dec:true,  n_obs:11792 },
+  { fake:'AA00', real:'F51', scenario:'AA00_constant', applied_bias:'constant', bias_type:'ConstantBias',           inj_ra:0.5,           inj_dec:0.0,    rec_ra:0.53271,   rec_dec:-0.00059,  snr_ra:89.726,       snr_dec:0.0,          det_ra:true,  det_dec:true,  n_obs:11792 },
+  { fake:'AA00', real:'F51', scenario:'AA00_timing',   applied_bias:'timing',   bias_type:'TimingBias',             inj_ra:0.01309,       inj_dec:0.0,    rec_ra:0.04580,   rec_dec:-0.00059,  snr_ra:4.674,        snr_dec:0.0,          det_ra:true,  det_dec:true,  n_obs:11792 },
+  { fake:'AA00', real:'F51', scenario:'AA00_mag_dep',  applied_bias:'mag_dep',  bias_type:'MagnitudeDependentBias', inj_ra:0.07931,       inj_dec:0.03172,rec_ra:0.11202,   rec_dec:0.03113,   snr_ra:26.239,       snr_dec:17.199,       det_ra:true,  det_dec:true,  n_obs:11792 },
+  { fake:'AA00', real:'F51', scenario:'AA00_epoch',    applied_bias:'epoch',    bias_type:'CatalogEpochBias',       inj_ra:0.25,          inj_dec:0.15,   rec_ra:0.28271,   rec_dec:0.14941,   snr_ra:67.382,       snr_dec:66.099,       det_ra:true,  det_dec:true,  n_obs:11792 },
+  { fake:'AA00', real:'F51', scenario:'AA00_seasonal', applied_bias:'seasonal', bias_type:'SeasonalBias',           inj_ra:-0.00424,      inj_dec:-0.00141,rec_ra:0.02847,  rec_dec:-0.00200,  snr_ra:1.254,        snr_dec:0.719,        det_ra:true,  det_dec:true,  n_obs:11792 },
+  { fake:'AA00', real:'F51', scenario:'AA00_step',     applied_bias:'step',     bias_type:'StepChangeBias',         inj_ra:0.09016,       inj_dec:-0.04508,rec_ra:0.12287,  rec_dec:-0.04567,  snr_ra:29.710,       snr_dec:22.418,       det_ra:true,  det_dec:true,  n_obs:11792 },
+  { fake:'AA00', real:'F51', scenario:'AA00_dcr',      applied_bias:'dcr',      bias_type:'DCRBias',                inj_ra:-0.00418,      inj_dec:-0.13901,rec_ra:0.02853,  rec_dec:-0.13960,  snr_ra:1.421,        snr_dec:56.603,       det_ra:true,  det_dec:true,  n_obs:11792 },
+  { fake:'AA00', real:'F51', scenario:'AA00_trailing', applied_bias:'trailing', bias_type:'TrailingBias',           inj_ra:4.71251,       inj_dec:0.0,    rec_ra:4.42912,   rec_dec:-0.00059,  snr_ra:15.818,       snr_dec:0.0,          det_ra:false, det_dec:true,  n_obs:11792 },
+  // AA01 target rows
+  { fake:'AA01', real:'G96', scenario:'AA01_clean',    applied_bias:'clean',    bias_type:'None',                   inj_ra:0.0,           inj_dec:0.0,    rec_ra:0.06919,   rec_dec:0.00551,   snr_ra:0.0,          snr_dec:0.0,          det_ra:true,  det_dec:true,  n_obs:14710 },
+  { fake:'AA01', real:'G96', scenario:'AA01_constant', applied_bias:'constant', bias_type:'ConstantBias',           inj_ra:0.5,           inj_dec:0.0,    rec_ra:0.56919,   rec_dec:0.00551,   snr_ra:92.390,       snr_dec:0.0,          det_ra:true,  det_dec:true,  n_obs:14710 },
+  { fake:'AA01', real:'G96', scenario:'AA01_timing',   applied_bias:'timing',   bias_type:'TimingBias',             inj_ra:0.01146,       inj_dec:0.0,    rec_ra:0.08064,   rec_dec:0.00551,   snr_ra:4.075,        snr_dec:0.0,          det_ra:true,  det_dec:true,  n_obs:14710 },
+  { fake:'AA01', real:'G96', scenario:'AA01_mag_dep',  applied_bias:'mag_dep',  bias_type:'MagnitudeDependentBias', inj_ra:0.06972,       inj_dec:0.02789,rec_ra:0.14022,   rec_dec:0.03315,   snr_ra:22.683,       snr_dec:16.805,       det_ra:true,  det_dec:true,  n_obs:14710 },
+  { fake:'AA01', real:'G96', scenario:'AA01_epoch',    applied_bias:'epoch',    bias_type:'CatalogEpochBias',       inj_ra:0.25,          inj_dec:0.15,   rec_ra:0.31919,   rec_dec:0.15551,   snr_ra:66.366,       snr_dec:72.390,       det_ra:true,  det_dec:true,  n_obs:14710 },
+  { fake:'AA01', real:'G96', scenario:'AA01_seasonal', applied_bias:'seasonal', bias_type:'SeasonalBias',           inj_ra:0.06429,       inj_dec:0.02143,rec_ra:0.13348,   rec_dec:0.02694,   snr_ra:19.696,       snr_dec:12.059,       det_ra:true,  det_dec:true,  n_obs:14710 },
+  { fake:'AA01', real:'G96', scenario:'AA01_step',     applied_bias:'step',     bias_type:'StepChangeBias',         inj_ra:0.09542,       inj_dec:-0.04771,rec_ra:0.16460,  rec_dec:-0.04220,  snr_ra:30.774,       snr_dec:26.510,       det_ra:true,  det_dec:true,  n_obs:14710 },
+  { fake:'AA01', real:'G96', scenario:'AA01_dcr',      applied_bias:'dcr',      bias_type:'DCRBias',                inj_ra:0.01513,       inj_dec:-0.17355,rec_ra:0.08432,  rec_dec:-0.16804,  snr_ra:4.883,        snr_dec:76.211,       det_ra:true,  det_dec:true,  n_obs:14710 },
+  { fake:'AA01', real:'G96', scenario:'AA01_trailing', applied_bias:'trailing', bias_type:'TrailingBias',           inj_ra:4.12519,       inj_dec:0.0,    rec_ra:4.19438,   rec_dec:0.00551,   snr_ra:26.749,       snr_dec:0.0,          det_ra:true,  det_dec:true,  n_obs:14710 },
+  // AA02 target rows
+  { fake:'AA02', real:'F52', scenario:'AA02_clean',    applied_bias:'clean',    bias_type:'None',                   inj_ra:0.0,           inj_dec:0.0,    rec_ra:-0.01346,  rec_dec:0.00581,   snr_ra:0.0,          snr_dec:0.0,          det_ra:true,  det_dec:true,  n_obs:6019 },
+  { fake:'AA02', real:'F52', scenario:'AA02_constant', applied_bias:'constant', bias_type:'ConstantBias',           inj_ra:0.5,           inj_dec:0.0,    rec_ra:0.48654,   rec_dec:0.00581,   snr_ra:68.570,       snr_dec:0.0,          det_ra:true,  det_dec:true,  n_obs:6019 },
+  { fake:'AA02', real:'F52', scenario:'AA02_timing',   applied_bias:'timing',   bias_type:'TimingBias',             inj_ra:0.01120,       inj_dec:0.0,    rec_ra:-0.00226,  rec_dec:0.00581,   snr_ra:2.893,        snr_dec:0.0,          det_ra:true,  det_dec:true,  n_obs:6019 },
+  { fake:'AA02', real:'F52', scenario:'AA02_mag_dep',  applied_bias:'mag_dep',  bias_type:'MagnitudeDependentBias', inj_ra:0.07716,       inj_dec:0.03086,rec_ra:0.06370,   rec_dec:0.03667,   snr_ra:18.733,       snr_dec:12.267,       det_ra:true,  det_dec:true,  n_obs:6019 },
+  { fake:'AA02', real:'F52', scenario:'AA02_epoch',    applied_bias:'epoch',    bias_type:'CatalogEpochBias',       inj_ra:0.25,          inj_dec:0.15,   rec_ra:0.23654,   rec_dec:0.15581,   snr_ra:51.974,       snr_dec:47.230,       det_ra:true,  det_dec:true,  n_obs:6019 },
+  { fake:'AA02', real:'F52', scenario:'AA02_seasonal', applied_bias:'seasonal', bias_type:'SeasonalBias',           inj_ra:-0.00310,      inj_dec:-0.00103,rec_ra:-0.01656, rec_dec:0.00477,   snr_ra:0.671,        snr_dec:0.381,        det_ra:true,  det_dec:true,  n_obs:6019 },
+  { fake:'AA02', real:'F52', scenario:'AA02_step',     applied_bias:'step',     bias_type:'StepChangeBias',         inj_ra:0.19000,       inj_dec:-0.09500,rec_ra:0.17654,  rec_dec:-0.08919,  snr_ra:37.801,       snr_dec:32.204,       det_ra:true,  det_dec:true,  n_obs:6019 },
+  { fake:'AA02', real:'F52', scenario:'AA02_dcr',      applied_bias:'dcr',      bias_type:'DCRBias',                inj_ra:-0.04349,      inj_dec:-0.11308,rec_ra:-0.05695, rec_dec:-0.10727,  snr_ra:10.588,       snr_dec:36.124,       det_ra:true,  det_dec:true,  n_obs:6019 },
+  { fake:'AA02', real:'F52', scenario:'AA02_trailing', applied_bias:'trailing', bias_type:'TrailingBias',           inj_ra:4.03317,       inj_dec:0.0,    rec_ra:4.01971,   rec_dec:0.00581,   snr_ra:11.939,       snr_dec:0.0,          det_ra:true,  det_dec:true,  n_obs:6019 },
+  // AA03 target rows
+  { fake:'AA03', real:'703', scenario:'AA03_clean',    applied_bias:'clean',    bias_type:'None',                   inj_ra:0.0,           inj_dec:0.0,    rec_ra:0.12128,   rec_dec:0.01016,   snr_ra:0.0,          snr_dec:0.0,          det_ra:false, det_dec:true,  n_obs:11201 },
+  { fake:'AA03', real:'703', scenario:'AA03_constant', applied_bias:'constant', bias_type:'ConstantBias',           inj_ra:0.5,           inj_dec:0.0,    rec_ra:0.62128,   rec_dec:0.01016,   snr_ra:66.754,       snr_dec:0.0,          det_ra:false, det_dec:true,  n_obs:11201 },
+  { fake:'AA03', real:'703', scenario:'AA03_timing',   applied_bias:'timing',   bias_type:'TimingBias',             inj_ra:0.01275,       inj_dec:0.0,    rec_ra:0.13402,   rec_dec:0.01016,   snr_ra:2.616,        snr_dec:0.0,          det_ra:false, det_dec:true,  n_obs:11201 },
+  { fake:'AA03', real:'703', scenario:'AA03_mag_dep',  applied_bias:'mag_dep',  bias_type:'MagnitudeDependentBias', inj_ra:0.02151,       inj_dec:0.00861,rec_ra:0.14323,   rec_dec:0.01886,   snr_ra:4.385,        snr_dec:2.313,        det_ra:false, det_dec:true,  n_obs:11201 },
+  { fake:'AA03', real:'703', scenario:'AA03_epoch',    applied_bias:'epoch',    bias_type:'CatalogEpochBias',       inj_ra:0.25,          inj_dec:0.15,   rec_ra:0.37128,   rec_dec:0.16016,   snr_ra:42.906,       snr_dec:37.403,       det_ra:false, det_dec:true,  n_obs:11201 },
+  { fake:'AA03', real:'703', scenario:'AA03_seasonal', applied_bias:'seasonal', bias_type:'SeasonalBias',           inj_ra:0.05520,       inj_dec:0.01840,rec_ra:0.17647,   rec_dec:0.02856,   snr_ra:10.476,       snr_dec:4.822,        det_ra:false, det_dec:true,  n_obs:11201 },
+  { fake:'AA03', real:'703', scenario:'AA03_step',     applied_bias:'step',     bias_type:'StepChangeBias',         inj_ra:0.03182,       inj_dec:-0.01591,rec_ra:0.15309,  rec_dec:-0.00574,  snr_ra:6.518,        snr_dec:4.260,        det_ra:false, det_dec:true,  n_obs:11201 },
+  { fake:'AA03', real:'703', scenario:'AA03_dcr',      applied_bias:'dcr',      bias_type:'DCRBias',                inj_ra:0.01580,       inj_dec:-0.17812,rec_ra:0.13707,  rec_dec:-0.16795,  snr_ra:3.036,        snr_dec:43.222,       det_ra:false, det_dec:true,  n_obs:11201 },
+  { fake:'AA03', real:'703', scenario:'AA03_trailing', applied_bias:'trailing', bias_type:'TrailingBias',           inj_ra:4.58932,       inj_dec:0.0,    rec_ra:4.71060,   rec_dec:0.01016,   snr_ra:19.902,       snr_dec:0.0,          det_ra:false, det_dec:true,  n_obs:11201 },
+  // AA04 target rows
+  { fake:'AA04', real:'691', scenario:'AA04_clean',    applied_bias:'clean',    bias_type:'None',                   inj_ra:0.0,           inj_dec:0.0,    rec_ra:0.15096,   rec_dec:0.01631,   snr_ra:0.0,          snr_dec:0.0,          det_ra:false, det_dec:true,  n_obs:3214 },
+  { fake:'AA04', real:'691', scenario:'AA04_constant', applied_bias:'constant', bias_type:'ConstantBias',           inj_ra:0.5,           inj_dec:0.0,    rec_ra:0.65096,   rec_dec:0.01631,   snr_ra:36.243,       snr_dec:0.0,          det_ra:false, det_dec:true,  n_obs:3214 },
+  { fake:'AA04', real:'691', scenario:'AA04_timing',   applied_bias:'timing',   bias_type:'TimingBias',             inj_ra:0.01135,       inj_dec:0.0,    rec_ra:0.16231,   rec_dec:0.01631,   snr_ra:1.360,        snr_dec:0.0,          det_ra:false, det_dec:true,  n_obs:3214 },
+  { fake:'AA04', real:'691', scenario:'AA04_mag_dep',  applied_bias:'mag_dep',  bias_type:'MagnitudeDependentBias', inj_ra:0.07717,       inj_dec:0.03087,rec_ra:0.22492,   rec_dec:0.04449,   snr_ra:8.761,        snr_dec:4.760,        det_ra:false, det_dec:true,  n_obs:3214 },
+  { fake:'AA04', real:'691', scenario:'AA04_epoch',    applied_bias:'epoch',    bias_type:'CatalogEpochBias',       inj_ra:0.25,          inj_dec:0.15,   rec_ra:0.40096,   rec_dec:0.16631,   snr_ra:24.001,       snr_dec:21.019,       det_ra:false, det_dec:true,  n_obs:3214 },
+  { fake:'AA04', real:'691', scenario:'AA04_seasonal', applied_bias:'seasonal', bias_type:'SeasonalBias',           inj_ra:0.04864,       inj_dec:0.01621,rec_ra:0.19959,   rec_dec:0.03252,   snr_ra:5.578,        snr_dec:2.492,        det_ra:false, det_dec:true,  n_obs:3214 },
+  { fake:'AA04', real:'691', scenario:'AA04_step',     applied_bias:'step',     bias_type:'StepChangeBias',         inj_ra:0.0,           inj_dec:0.0,    rec_ra:0.15096,   rec_dec:0.01631,   snr_ra:0.0,          snr_dec:0.0,          det_ra:false, det_dec:true,  n_obs:3214 },
+  { fake:'AA04', real:'691', scenario:'AA04_dcr',      applied_bias:'dcr',      bias_type:'DCRBias',                inj_ra:-0.05605,      inj_dec:-0.18271,rec_ra:0.09491,  rec_dec:-0.16639,  snr_ra:6.708,        snr_dec:24.852,       det_ra:false, det_dec:true,  n_obs:3214 },
+  { fake:'AA04', real:'691', scenario:'AA04_trailing', applied_bias:'trailing', bias_type:'TrailingBias',           inj_ra:4.08675,       inj_dec:0.0,    rec_ra:4.23771,   rec_dec:0.01631,   snr_ra:6.265,        snr_dec:0.0,          det_ra:false, det_dec:true,  n_obs:3214 },
+  // AA05 target rows
+  { fake:'AA05', real:'W84', scenario:'AA05_clean',    applied_bias:'clean',    bias_type:'None',                   inj_ra:0.0,           inj_dec:0.0,    rec_ra:-0.02369,  rec_dec:0.01928,   snr_ra:0.0,          snr_dec:0.0,          det_ra:true,  det_dec:true,  n_obs:354 },
+  { fake:'AA05', real:'W84', scenario:'AA05_constant', applied_bias:'constant', bias_type:'ConstantBias',           inj_ra:0.5,           inj_dec:0.0,    rec_ra:0.47631,   rec_dec:0.01928,   snr_ra:16.835,       snr_dec:0.0,          det_ra:true,  det_dec:true,  n_obs:354 },
+  { fake:'AA05', real:'W84', scenario:'AA05_timing',   applied_bias:'timing',   bias_type:'TimingBias',             inj_ra:0.00901,       inj_dec:0.0,    rec_ra:-0.01468,  rec_dec:0.01928,   snr_ra:0.578,        snr_dec:0.0,          det_ra:true,  det_dec:true,  n_obs:354 },
+  { fake:'AA05', real:'W84', scenario:'AA05_mag_dep',  applied_bias:'mag_dep',  bias_type:'MagnitudeDependentBias', inj_ra:0.07545,       inj_dec:0.03018,rec_ra:0.08471,   rec_dec:0.02589,   snr_ra:3.656,        snr_dec:2.352,        det_ra:true,  det_dec:true,  n_obs:354 },
+  { fake:'AA05', real:'W84', scenario:'AA05_epoch',    applied_bias:'epoch',    bias_type:'CatalogEpochBias',       inj_ra:0.25,          inj_dec:0.15,   rec_ra:0.22631,   rec_dec:0.16928,   snr_ra:12.727,       snr_dec:10.066,       det_ra:true,  det_dec:true,  n_obs:354 },
+  { fake:'AA05', real:'W84', scenario:'AA05_seasonal', applied_bias:'seasonal', bias_type:'SeasonalBias',           inj_ra:0.06463,       inj_dec:0.02154,rec_ra:0.04094,   rec_dec:0.04082,   snr_ra:3.853,        snr_dec:1.752,        det_ra:true,  det_dec:true,  n_obs:354 },
+  { fake:'AA05', real:'W84', scenario:'AA05_step',     applied_bias:'step',     bias_type:'StepChangeBias',         inj_ra:0.06554,       inj_dec:-0.03277,rec_ra:0.04185,  rec_dec:-0.01349,  snr_ra:3.454,        snr_dec:2.546,        det_ra:true,  det_dec:true,  n_obs:354 },
+  { fake:'AA05', real:'W84', scenario:'AA05_dcr',      applied_bias:'dcr',      bias_type:'DCRBias',                inj_ra:0.05877,       inj_dec:0.14524, rec_ra:0.03508,  rec_dec:0.16452,   snr_ra:3.271,        snr_dec:9.600,        det_ra:true,  det_dec:true,  n_obs:354 },
+  { fake:'AA05', real:'W84', scenario:'AA05_trailing', applied_bias:'trailing', bias_type:'TrailingBias',           inj_ra:3.24406,       inj_dec:0.0,    rec_ra:3.22038,   rec_dec:0.01928,   snr_ra:17.894,       snr_dec:0.0,          det_ra:true,  det_dec:true,  n_obs:354 },
+  // AA06 target rows
+  { fake:'AA06', real:'W68', scenario:'AA06_clean',    applied_bias:'clean',    bias_type:'None',                   inj_ra:0.0,           inj_dec:0.0,    rec_ra:-0.04358,  rec_dec:-0.01191,  snr_ra:0.0,          snr_dec:0.0,          det_ra:true,  det_dec:true,  n_obs:4780 },
+  { fake:'AA06', real:'W68', scenario:'AA06_constant', applied_bias:'constant', bias_type:'ConstantBias',           inj_ra:0.5,           inj_dec:0.0,    rec_ra:0.45642,   rec_dec:-0.01191,  snr_ra:58.443,       snr_dec:0.0,          det_ra:true,  det_dec:true,  n_obs:4780 },
+  { fake:'AA06', real:'W68', scenario:'AA06_timing',   applied_bias:'timing',   bias_type:'TimingBias',             inj_ra:0.02302,       inj_dec:0.0,    rec_ra:-0.02056,  rec_dec:-0.01191,  snr_ra:3.164,        snr_dec:0.0,          det_ra:true,  det_dec:true,  n_obs:4780 },
+  { fake:'AA06', real:'W68', scenario:'AA06_mag_dep',  applied_bias:'mag_dep',  bias_type:'MagnitudeDependentBias', inj_ra:-0.00355,      inj_dec:-0.00142,rec_ra:-0.04712, rec_dec:-0.01333,  snr_ra:0.640,        snr_dec:0.240,        det_ra:true,  det_dec:true,  n_obs:4780 },
+  { fake:'AA06', real:'W68', scenario:'AA06_epoch',    applied_bias:'epoch',    bias_type:'CatalogEpochBias',       inj_ra:0.25,          inj_dec:0.15,   rec_ra:0.20642,   rec_dec:0.13809,   snr_ra:40.277,       snr_dec:24.115,       det_ra:true,  det_dec:true,  n_obs:4780 },
+  { fake:'AA06', real:'W68', scenario:'AA06_seasonal', applied_bias:'seasonal', bias_type:'SeasonalBias',           inj_ra:-0.00723,      inj_dec:-0.00241,rec_ra:-0.05081, rec_dec:-0.01432,  snr_ra:1.150,        snr_dec:0.394,        det_ra:true,  det_dec:true,  n_obs:4780 },
+  { fake:'AA06', real:'W68', scenario:'AA06_step',     applied_bias:'step',     bias_type:'StepChangeBias',         inj_ra:0.30226,       inj_dec:-0.15113,rec_ra:0.25868,  rec_dec:-0.16304,  snr_ra:43.450,       snr_dec:23.460,       det_ra:true,  det_dec:true,  n_obs:4780 },
+  { fake:'AA06', real:'W68', scenario:'AA06_dcr',      applied_bias:'dcr',      bias_type:'DCRBias',                inj_ra:-0.00233,      inj_dec:0.15700, rec_ra:-0.04590, rec_dec:0.14509,   snr_ra:0.410,        snr_dec:23.377,       det_ra:true,  det_dec:true,  n_obs:4780 },
+  { fake:'AA06', real:'W68', scenario:'AA06_trailing', applied_bias:'trailing', bias_type:'TrailingBias',           inj_ra:8.28620,       inj_dec:0.0,    rec_ra:4.82576,   rec_dec:-0.01191,  snr_ra:4.848,        snr_dec:0.0,          det_ra:false, det_dec:true,  n_obs:4780 },
+  // AA07 target rows
+  { fake:'AA07', real:'T09', scenario:'AA07_clean',    applied_bias:'clean',    bias_type:'None',                   inj_ra:0.0,           inj_dec:0.0,    rec_ra:0.08360,   rec_dec:0.01698,   snr_ra:0.0,          snr_dec:0.0,          det_ra:true,  det_dec:true,  n_obs:76 },
+  { fake:'AA07', real:'T09', scenario:'AA07_constant', applied_bias:'constant', bias_type:'ConstantBias',           inj_ra:0.5,           inj_dec:0.0,    rec_ra:0.58360,   rec_dec:0.01698,   snr_ra:6.609,        snr_dec:0.0,          det_ra:true,  det_dec:true,  n_obs:76 },
+  { fake:'AA07', real:'T09', scenario:'AA07_timing',   applied_bias:'timing',   bias_type:'TimingBias',             inj_ra:0.00565,       inj_dec:0.0,    rec_ra:0.08925,   rec_dec:0.01698,   snr_ra:0.154,        snr_dec:0.0,          det_ra:true,  det_dec:true,  n_obs:76 },
+  { fake:'AA07', real:'T09', scenario:'AA07_mag_dep',  applied_bias:'mag_dep',  bias_type:'MagnitudeDependentBias', inj_ra:0.11743,       inj_dec:0.04697,rec_ra:0.20103,   rec_dec:0.06396,   snr_ra:2.736,        snr_dec:1.621,        det_ra:true,  det_dec:true,  n_obs:76 },
+  { fake:'AA07', real:'T09', scenario:'AA07_epoch',    applied_bias:'epoch',    bias_type:'CatalogEpochBias',       inj_ra:0.25,          inj_dec:0.15,   rec_ra:0.33360,   rec_dec:0.16698,   snr_ra:4.805,        snr_dec:4.384,        det_ra:true,  det_dec:true,  n_obs:76 },
+  { fake:'AA07', real:'T09', scenario:'AA07_seasonal', applied_bias:'seasonal', bias_type:'SeasonalBias',           inj_ra:0.13701,       inj_dec:0.04567,rec_ra:0.22061,   rec_dec:0.06265,   snr_ra:2.863,        snr_dec:1.559,        det_ra:true,  det_dec:true,  n_obs:76 },
+  { fake:'AA07', real:'T09', scenario:'AA07_step',     applied_bias:'step',     bias_type:'StepChangeBias',         inj_ra:0.0,           inj_dec:0.0,    rec_ra:0.08360,   rec_dec:0.01698,   snr_ra:0.0,          snr_dec:0.0,          det_ra:true,  det_dec:true,  n_obs:76 },
+  { fake:'AA07', real:'T09', scenario:'AA07_dcr',      applied_bias:'dcr',      bias_type:'DCRBias',                inj_ra:0.03485,       inj_dec:-0.13101,rec_ra:0.11845,  rec_dec:-0.11403,  snr_ra:0.717,        snr_dec:4.153,        det_ra:true,  det_dec:true,  n_obs:76 },
+  { fake:'AA07', real:'T09', scenario:'AA07_trailing', applied_bias:'trailing', bias_type:'TrailingBias',           inj_ra:2.03454,       inj_dec:0.0,    rec_ra:2.11814,   rec_dec:0.01698,   snr_ra:8.073,        snr_dec:0.0,          det_ra:true,  det_dec:true,  n_obs:76 },
+  // AA08 target rows
+  { fake:'AA08', real:'V00', scenario:'AA08_clean',    applied_bias:'clean',    bias_type:'None',                   inj_ra:0.0,           inj_dec:0.0,    rec_ra:0.08087,   rec_dec:0.03281,   snr_ra:0.0,          snr_dec:0.0,          det_ra:true,  det_dec:true,  n_obs:470 },
+  { fake:'AA08', real:'V00', scenario:'AA08_constant', applied_bias:'constant', bias_type:'ConstantBias',           inj_ra:0.5,           inj_dec:0.0,    rec_ra:0.58087,   rec_dec:0.03281,   snr_ra:14.428,       snr_dec:0.0,          det_ra:true,  det_dec:true,  n_obs:470 },
+  { fake:'AA08', real:'V00', scenario:'AA08_timing',   applied_bias:'timing',   bias_type:'TimingBias',             inj_ra:0.01045,       inj_dec:0.0,    rec_ra:0.09132,   rec_dec:0.03281,   snr_ra:0.465,        snr_dec:0.0,          det_ra:true,  det_dec:true,  n_obs:470 },
+  { fake:'AA08', real:'V00', scenario:'AA08_mag_dep',  applied_bias:'mag_dep',  bias_type:'MagnitudeDependentBias', inj_ra:0.09574,       inj_dec:0.03830,rec_ra:0.17826,   rec_dec:0.07071,   snr_ra:3.948,        snr_dec:2.190,        det_ra:true,  det_dec:true,  n_obs:470 },
+  { fake:'AA08', real:'V00', scenario:'AA08_epoch',    applied_bias:'epoch',    bias_type:'CatalogEpochBias',       inj_ra:0.25,          inj_dec:0.15,   rec_ra:0.33087,   rec_dec:0.18281,   snr_ra:9.343,        snr_dec:7.893,        det_ra:true,  det_dec:true,  n_obs:470 },
+  { fake:'AA08', real:'V00', scenario:'AA08_seasonal', applied_bias:'seasonal', bias_type:'SeasonalBias',           inj_ra:0.07942,       inj_dec:0.02647,rec_ra:0.16029,   rec_dec:0.05928,   snr_ra:3.106,        snr_dec:1.456,        det_ra:true,  det_dec:true,  n_obs:470 },
+  { fake:'AA08', real:'V00', scenario:'AA08_step',     applied_bias:'step',     bias_type:'StepChangeBias',         inj_ra:0.29702,       inj_dec:-0.14851,rec_ra:0.37789,  rec_dec:-0.11570,  snr_ra:10.305,       snr_dec:8.304,        det_ra:true,  det_dec:true,  n_obs:470 },
+  { fake:'AA08', real:'V00', scenario:'AA08_dcr',      applied_bias:'dcr',      bias_type:'DCRBias',                inj_ra:0.07276,       inj_dec:-0.16388,rec_ra:0.15363,  rec_dec:-0.13107,  snr_ra:2.954,        snr_dec:8.830,        det_ra:true,  det_dec:true,  n_obs:470 },
+  { fake:'AA08', real:'V00', scenario:'AA08_trailing', applied_bias:'trailing', bias_type:'TrailingBias',           inj_ra:3.76059,       inj_dec:0.0,    rec_ra:3.84146,   rec_dec:0.03281,   snr_ra:15.518,       snr_dec:0.0,          det_ra:true,  det_dec:true,  n_obs:470 },
+];
+
+// Cross-contamination: AA01_clean vs AA01_constant for non-target stations
+// AA01_clean: rows where scenario=AA01_clean, is_target=False
+// AA01_constant: rows where scenario=AA01_constant, is_target=False
+const AA01_CLEAN = {
+  AA00: { rec_ra:0.03271,  rec_dec:-0.00059, n_obs:11792 },
+  AA02: { rec_ra:-0.01346, rec_dec:0.00581,  n_obs:6019  },
+  AA03: { rec_ra:0.12128,  rec_dec:0.01016,  n_obs:11201 },
+  AA04: { rec_ra:0.15096,  rec_dec:0.01631,  n_obs:3214  },
+  AA05: { rec_ra:-0.02369, rec_dec:0.01928,  n_obs:354   },
+  AA06: { rec_ra:-0.04358, rec_dec:-0.01191, n_obs:4780  },
+  AA07: { rec_ra:0.08360,  rec_dec:0.01698,  n_obs:76    },
+  AA08: { rec_ra:0.08087,  rec_dec:0.03281,  n_obs:470   },
+};
+
+const AA01_CONSTANT = {
+  AA00: { rec_ra:-0.13176, rec_dec:0.00066,  n_obs:11792 },
+  AA02: { rec_ra:-0.11035, rec_dec:0.00618,  n_obs:6019  },
+  AA03: { rec_ra:-0.08079, rec_dec:0.00917,  n_obs:11201 },
+  AA04: { rec_ra:-0.19690, rec_dec:0.01777,  n_obs:3214  },
+  AA05: { rec_ra:-0.20738, rec_dec:0.08299,  n_obs:354   },
+  AA06: { rec_ra:-0.05381, rec_dec:-0.00382, n_obs:4780  },
+  AA07: { rec_ra:-0.15660, rec_dec:0.01908,  n_obs:76    },
+  AA08: { rec_ra:0.01300,  rec_dec:0.02010,  n_obs:470   },
+};
+
+// ASSIST Phase 1 observatory stats (from observatory_summary.txt)
+const ASSIST_STATS = [
+  { stn:'703', n_obs:11201, n_obj:92, bias_ra:-0.057, bias_dec:+0.022, rms_ra:0.491, rms_dec:0.377, chi2:3.13  },
+  { stn:'G96', n_obs:6884,  n_obj:56, bias_ra:+0.514, bias_dec:+0.002, rms_ra:0.595, rms_dec:0.186, chi2:17.27 },
+  { stn:'F51', n_obs:6053,  n_obj:56, bias_ra:-0.155, bias_dec:-0.005, rms_ra:0.299, rms_dec:0.183, chi2:5.46  },
+  { stn:'F52', n_obs:2919,  n_obj:56, bias_ra:-0.124, bias_dec:-0.008, rms_ra:0.289, rms_dec:0.182, chi2:5.20  },
+  { stn:'691', n_obs:1540,  n_obj:54, bias_ra:+0.026, bias_dec:+0.153, rms_ra:0.384, rms_dec:0.379, chi2:2.38  },
+  { stn:'W68', n_obs:581,   n_obj:15, bias_ra:+0.178, bias_dec:-0.147, rms_ra:0.439, rms_dec:0.319, chi2:4.71  },
+  { stn:'V00', n_obs:228,   n_obj:34, bias_ra:+3.058, bias_dec:+0.027, rms_ra:3.715, rms_dec:0.367, chi2:113.78},
+  { stn:'W84', n_obs:186,   n_obj:16, bias_ra:-0.149, bias_dec:+0.071, rms_ra:0.380, rms_dec:0.247, chi2:5.14  },
+  { stn:'T09', n_obs:62,    n_obj:7,  bias_ra:-0.064, bias_dec:-0.122, rms_ra:0.364, rms_dec:0.291, chi2:3.48  },
+];
+
+// ============================================================
+// STATION COLORS
+// ============================================================
+const STATION_COLORS = {
+  AA00: '#1565c0',  // F51 - blue
+  AA01: '#e53935',  // G96 - red
+  AA02: '#43a047',  // F52 - green
+  AA03: '#fb8c00',  // 703 - orange
+  AA04: '#8e24aa',  // 691 - purple
+  AA05: '#00acc1',  // W84 - cyan
+  AA06: '#f06292',  // W68 - pink
+  AA07: '#795548',  // T09 - brown
+  AA08: '#546e7a',  // V00 - grey
+};
+
+const BIAS_LABELS = {
+  clean: 'Clean (baseline)',
+  constant: 'Constant (+0.5")',
+  timing: 'Timing (1s shift)',
+  mag_dep: 'Mag-Dependent',
+  epoch: 'Catalog Epoch',
+  seasonal: 'Seasonal',
+  step: 'Step Change',
+  dcr: 'DCR',
+  trailing: 'Trailing Loss',
+};
+
+// ============================================================
+// REAL PER-OBJECT DATA (extracted from mpc_observations.parquet)
+// objects sorted descending by total observation count
+// ============================================================
+const OBS_PER_OBJECT = {"objects": ["1957 AA", "1996 CA3", "1989 UD", "2000 OZ57", "1995 UX", "2000 AJ116", "1994 RK11", "2001 TS239", "1998 WK6", "1999 OC", "2000 TY21", "1997 AP21", "2000 YC50", "1993 OC", "1990 EK", "2000 SU292", "2000 QB77", "2001 TM116", "1992 UR2", "1999 FQ25", "2000 VP46", "2001 QR233", "2000 CX32", "1999 XC188", "2001 QQ12", "1998 CU3", "2000 AZ5", "2000 QW100", "2001 RV63", "1968 OD1", "2001 TF125", "2003 BO66", "2003 VC5", "2000 GB43", "2002 RR71", "2002 JK27", "2000 TO18", "2001 CK27", "1999 TY151", "1995 SG77", "2001 BR1", "2001 QX173", "2004 LC9", "1999 XY28", "2002 GA116", "2002 JK1", "2000 SN50", "2003 YL72", "2000 SZ364", "2002 PR29", "1997 OD2", "1998 XM4", "2001 VK65", "2005 MR41", "2004 DA7", "2002 FS16", "2004 TC21", "2005 TY18", "2007 RZ220", "2006 SO24", "1999 XU3", "2005 YF97", "2001 UH23", "2006 SL308", "2005 UE259", "2000 AS140", "2006 SV34", "2000 SS92", "2005 SA275", "2005 VW119", "2002 XG53", "2002 TC263", "2007 DE106", "2005 NB76", "2007 QN10", "2005 YJ142", "1995 SR54", "2006 DO6", "2005 EO104", "2003 WZ43", "2002 RF261", "2006 VZ173", "2007 RQ322", "2003 XG43", "2006 AZ58", "2006 AQ62", "2003 UO40", "2002 OR27", "2007 VE322", "2002 CX181", "2005 TO141", "2003 SD433", "2006 TB88", "2004 TZ119", "2001 UE85", "2002 RZ58", "2006 KK17", "2007 BG42", "2006 BQ199", "2005 UU223"], "stations": ["691", "703", "F51", "F52", "G96", "T09", "V00", "W68", "W84"], "data": {"691": [78, 84, 65, 66, 105, 15, 71, 20, 64, 27, 21, 41, 48, 9, 48, 30, 39, 3, 15, 74, 39, 70, 60, 36, 51, 50, 42, 63, 60, 12, 12, 30, 60, 63, 24, 39, 27, 18, 60, 15, 62, 42, 30, 30, 24, 33, 54, 33, 6, 48, 36, 0, 36, 57, 39, 33, 18, 30, 30, 15, 15, 24, 15, 21, 42, 3, 27, 18, 30, 18, 0, 24, 24, 42, 18, 36, 26, 33, 27, 18, 22, 0, 9, 33, 36, 18, 18, 9, 21, 18, 33, 15, 18, 3, 24, 9, 12, 12, 18, 15], "703": [602, 302, 319, 298, 325, 348, 352, 309, 294, 330, 342, 291, 204, 320, 306, 252, 176, 229, 416, 214, 232, 104, 143, 285, 140, 178, 102, 163, 126, 208, 167, 125, 62, 92, 120, 85, 156, 128, 115, 139, 81, 122, 94, 107, 77, 82, 36, 72, 90, 73, 56, 150, 72, 15, 22, 53, 69, 16, 28, 51, 60, 19, 91, 38, 8, 63, 10, 36, 12, 54, 50, 0, 11, 12, 11, 3, 32, 35, 2, 11, 24, 26, 23, 28, 0, 0, 0, 0, 12, 8, 1, 0, 0, 4, 8, 12, 20, 4, 0, 8], "F51": [144, 250, 183, 177, 158, 189, 136, 117, 117, 159, 172, 162, 147, 87, 61, 135, 169, 138, 63, 124, 154, 201, 148, 128, 126, 171, 142, 147, 113, 111, 101, 105, 150, 151, 142, 149, 134, 129, 107, 131, 111, 138, 184, 134, 153, 139, 129, 138, 129, 85, 124, 52, 110, 112, 136, 130, 83, 110, 141, 143, 126, 139, 108, 116, 123, 85, 114, 105, 128, 87, 82, 106, 76, 110, 73, 127, 101, 92, 115, 120, 111, 119, 63, 67, 69, 72, 84, 84, 84, 86, 67, 94, 48, 75, 71, 77, 70, 75, 74, 60], "F52": [84, 100, 87, 115, 99, 64, 69, 83, 96, 65, 62, 69, 106, 114, 79, 100, 76, 113, 48, 64, 29, 52, 53, 55, 51, 45, 110, 73, 88, 48, 43, 72, 70, 39, 80, 77, 58, 45, 108, 52, 43, 36, 67, 66, 69, 77, 113, 56, 60, 68, 57, 15, 54, 92, 52, 65, 92, 55, 68, 46, 46, 64, 39, 42, 60, 84, 82, 45, 32, 64, 82, 51, 64, 52, 74, 38, 40, 26, 23, 60, 48, 58, 49, 44, 40, 28, 62, 61, 40, 47, 38, 18, 44, 33, 27, 8, 17, 30, 28, 39], "G96": [279, 283, 322, 276, 238, 250, 297, 147, 251, 175, 215, 178, 248, 200, 163, 173, 187, 167, 99, 205, 199, 278, 248, 113, 225, 158, 157, 164, 187, 182, 149, 225, 208, 218, 148, 185, 154, 194, 146, 146, 200, 162, 146, 126, 131, 134, 136, 145, 155, 160, 139, 72, 128, 147, 157, 107, 132, 188, 123, 122, 122, 124, 108, 137, 117, 115, 86, 124, 122, 115, 117, 143, 138, 96, 107, 103, 83, 95, 121, 52, 71, 72, 130, 87, 106, 127, 67, 86, 72, 64, 79, 87, 92, 71, 71, 72, 77, 75, 72, 60], "T09": [0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 19, 7, 0, 0, 0, 0, 0, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3], "V00": [8, 4, 4, 4, 24, 20, 12, 4, 8, 4, 0, 0, 8, 20, 0, 0, 8, 8, 8, 4, 8, 8, 0, 0, 8, 0, 4, 4, 4, 4, 0, 0, 4, 8, 0, 4, 4, 0, 4, 0, 3, 7, 0, 0, 3, 4, 4, 24, 8, 7, 4, 0, 24, 4, 0, 4, 4, 0, 4, 8, 4, 4, 4, 12, 12, 0, 4, 8, 8, 4, 8, 0, 4, 0, 4, 0, 12, 15, 4, 8, 0, 0, 0, 4, 0, 4, 3, 0, 0, 0, 0, 4, 8, 0, 4, 0, 0, 0, 0, 4], "W68": [379, 234, 238, 181, 148, 198, 69, 341, 185, 198, 130, 172, 125, 124, 203, 128, 132, 131, 139, 77, 101, 12, 22, 52, 48, 43, 87, 16, 39, 44, 124, 24, 0, 8, 62, 28, 31, 44, 12, 28, 29, 21, 0, 24, 44, 22, 4, 4, 0, 8, 43, 147, 8, 0, 0, 24, 0, 0, 0, 0, 8, 0, 4, 0, 0, 4, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 16, 0, 0, 0, 0], "W84": [0, 0, 0, 19, 11, 0, 27, 0, 0, 4, 0, 0, 0, 0, 6, 10, 5, 0, 0, 13, 12, 0, 7, 7, 0, 0, 0, 0, 12, 8, 0, 10, 26, 0, 0, 0, 0, 4, 3, 20, 0, 0, 0, 20, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 23, 0, 12, 0, 0, 0, 0, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0, 8, 3, 3, 16, 0, 3, 0, 0, 0, 0, 20, 0, 4, 0, 0, 0, 0]}, "totals": [1574, 1257, 1218, 1136, 1108, 1087, 1033, 1021, 1015, 962, 942, 913, 886, 874, 866, 828, 792, 789, 788, 775, 774, 725, 681, 676, 649, 645, 644, 630, 629, 617, 596, 591, 580, 579, 576, 567, 564, 562, 555, 531, 529, 528, 521, 510, 501, 491, 476, 472, 467, 462, 459, 436, 432, 427, 418, 416, 409, 399, 394, 385, 381, 374, 369, 366, 362, 354, 346, 346, 344, 342, 339, 329, 321, 312, 307, 307, 302, 296, 292, 285, 276, 275, 274, 271, 254, 252, 250, 240, 232, 223, 218, 218, 210, 206, 205, 198, 196, 196, 192, 189]};
+
+// Real code → fake code mapping for colors
+const REAL_TO_FAKE = {'691':'AA04','703':'AA03','F51':'AA00','F52':'AA02','G96':'AA01','T09':'AA07','V00':'AA08','W68':'AA06','W84':'AA05'};
+
+// ============================================================
+// SECTION 1: Per-Object Observation Breakdown
+// ============================================================
+(function buildSection1() {
+  const nObj = OBS_PER_OBJECT.objects.length;
+  // Station order by total obs count (descending)
+  const stationOrder = [...OBS_PER_OBJECT.stations].sort((a, b) => {
+    const sumA = OBS_PER_OBJECT.data[a].reduce((s,v)=>s+v,0);
+    const sumB = OBS_PER_OBJECT.data[b].reduce((s,v)=>s+v,0);
+    return sumB - sumA;
+  });
+
+  // Real labels (objects already sorted by total desc in data)
+  const labels = OBS_PER_OBJECT.objects;
+
+  const datasets = stationOrder.map(realCode => {
+    const fakeCode = REAL_TO_FAKE[realCode] || 'AA00';
+    return {
+      label: `${realCode} (${fakeCode})`,
+      data: OBS_PER_OBJECT.data[realCode],
+      backgroundColor: STATION_COLORS[fakeCode],
+      borderWidth: 0,
+    };
+  });
+
+  // Legend
+  const legendDiv = document.getElementById('s1-legend');
+  stationOrder.forEach(realCode => {
+    const fakeCode = REAL_TO_FAKE[realCode] || 'AA00';
+    legendDiv.innerHTML += `
+      <div class="legend-item">
+        <div class="legend-swatch" style="background:${STATION_COLORS[fakeCode]}"></div>
+        <span>${realCode} (${fakeCode})</span>
+      </div>`;
+  });
+
+  const ctx = document.getElementById('obsBreakdownChart').getContext('2d');
+  const chartH = nObj * 18;
+  document.getElementById('obsBreakdownChart').style.height = chartH + 'px';
+
+  new Chart(ctx, {
+    type: 'bar',
+    data: { labels, datasets },
+    options: {
+      indexAxis: 'y',
+      animation: false,
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: items => items[0].label,
+            label: item => `${item.dataset.label}: ${item.parsed.x} obs`,
+          }
+        }
+      },
+      scales: {
+        x: {
+          stacked: true,
+          title: { display: true, text: 'Number of observations', font: { size: 11 } },
+          grid: { color: '#f0f0f0' }
+        },
+        y: {
+          stacked: true,
+          ticks: { font: { size: 9 } },
+          grid: { display: false }
+        }
+      }
+    }
+  });
+})();
+
+// ============================================================
+// SECTION 2: Observatory Config Table
+// ============================================================
+(function buildSection2() {
+  const tbody = document.getElementById('obs-config-body');
+  STATIONS.forEach(s => {
+    const info = CLEAN_OBS[s.fake];
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="mono">${s.fake}</td>
+      <td><strong>${s.real}</strong></td>
+      <td>${s.astcat}</td>
+      <td>${s.sigma_ra.toFixed(2)}"</td>
+      <td>${s.sigma_dec.toFixed(2)}"</td>
+      <td><span class="badge-grey">None (clean)</span></td>
+      <td>${info.n_obs.toLocaleString()}</td>
+      <td>${info.n_objects}/100</td>
+    `;
+    tbody.appendChild(tr);
+  });
+})();
+
+// ============================================================
+// SECTION 3: Phase 1 TwoBody LOOO Recovery
+// ============================================================
+(function buildSection3() {
+  const stations = ['AA00','AA01','AA02','AA03','AA04','AA05','AA06','AA07','AA08'];
+  const cleanRows = TARGET_ROWS.filter(r => r.applied_bias === 'clean');
+  const constantRows = TARGET_ROWS.filter(r => r.applied_bias === 'constant');
+
+  const labels = stations.map(s => {
+    const st = STATIONS.find(x => x.fake === s);
+    return `${s}\n(${st.real})`;
+  });
+
+  const cleanRa  = stations.map(s => {
+    const r = cleanRows.find(x => x.fake === s);
+    return r ? +r.rec_ra.toFixed(4) : null;
+  });
+  const constRa  = stations.map(s => {
+    const r = constantRows.find(x => x.fake === s);
+    return r ? +r.rec_ra.toFixed(4) : null;
+  });
+
+  const ctx1 = document.getElementById('recoveryCompareChart').getContext('2d');
+  new Chart(ctx1, {
+    type: 'bar',
+    data: {
+      labels: stations.map(s => `${s}(${STATIONS.find(x=>x.fake===s).real})`),
+      datasets: [
+        {
+          label: 'Clean (injected=0)',
+          data: cleanRa,
+          backgroundColor: '#90caf9',
+          borderColor: '#1565c0',
+          borderWidth: 1,
+        },
+        {
+          label: 'Constant +0.5" injected',
+          data: constRa,
+          backgroundColor: '#ef9a9a',
+          borderColor: '#c62828',
+          borderWidth: 1,
+        }
+      ]
+    },
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'top', labels: { font: { size: 11 } } } },
+      scales: {
+        y: {
+          title: { display: true, text: 'Recovered mean RA (arcsec)' },
+          grid: { color: '#f0f0f0' }
+        },
+        x: { ticks: { font: { size: 10 } } }
+      }
+    }
+  });
+
+  const snrRa = stations.map(s => {
+    const r = constantRows.find(x => x.fake === s);
+    return r ? +r.snr_ra.toFixed(2) : null;
+  });
+  const snrColors = snrRa.map(v => v >= 5 ? '#43a047' : v >= 2 ? '#fb8c00' : '#e53935');
+  const ctx2 = document.getElementById('detectionSnrChart').getContext('2d');
+  new Chart(ctx2, {
+    type: 'bar',
+    data: {
+      labels: stations.map(s => `${s}(${STATIONS.find(x=>x.fake===s).real})`),
+      datasets: [{
+        label: 'Detection SNR (RA)',
+        data: snrRa,
+        backgroundColor: snrColors,
+        borderWidth: 0,
+      }]
+    },
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        annotation: {},
+        tooltip: { callbacks: { label: i => `SNR: ${i.parsed.y.toFixed(2)}` } }
+      },
+      scales: {
+        y: {
+          title: { display: true, text: 'SNR (σ)' },
+          grid: { color: '#f0f0f0' }
+        },
+        x: { ticks: { font: { size: 10 } } }
+      }
+    }
+  });
+
+  // Recovery table — target rows only
+  const tbody = document.getElementById('recovery-table-body');
+  TARGET_ROWS.forEach(r => {
+    const biasLabel = BIAS_LABELS[r.applied_bias] || r.applied_bias;
+    const detRa  = r.det_ra  ? '<span class="badge-green">Y</span>'  : '<span class="badge-red">N</span>';
+    const detDec = r.det_dec ? '<span class="badge-green">Y</span>'  : '<span class="badge-red">N</span>';
+    const isClean = r.applied_bias === 'clean';
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="mono">${r.fake}</td>
+      <td>${r.real}</td>
+      <td>${isClean ? '<span class="badge-grey">clean</span>' : biasLabel}</td>
+      <td>${r.inj_ra.toFixed(4)}</td>
+      <td>${r.inj_dec.toFixed(4)}</td>
+      <td>${r.rec_ra.toFixed(4)}</td>
+      <td>${r.rec_dec.toFixed(4)}</td>
+      <td>${(r.rec_ra - r.inj_ra).toFixed(4)}</td>
+      <td>${r.snr_ra.toFixed(2)}</td>
+      <td>${r.snr_dec.toFixed(2)}</td>
+      <td>${detRa}</td>
+      <td>${detDec}</td>
+      <td>${r.n_obs.toLocaleString()}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+})();
+
+// ============================================================
+// SECTION 4: G96 Cross-Contamination
+// ============================================================
+(function buildSection4() {
+  const nonTargetStations = ['AA00','AA02','AA03','AA04','AA05','AA06','AA07','AA08'];
+  const raShifts   = nonTargetStations.map(s => +(AA01_CONSTANT[s].rec_ra - AA01_CLEAN[s].rec_ra).toFixed(4));
+  const decShifts  = nonTargetStations.map(s => +(AA01_CONSTANT[s].rec_dec - AA01_CLEAN[s].rec_dec).toFixed(4));
+  const labels = nonTargetStations.map(s => `${s}(${STATIONS.find(x=>x.fake===s).real})`);
+
+  const raColors  = raShifts.map(v  => Math.abs(v)  > 0.05 ? '#ef5350' : '#42a5f5');
+  const decColors = decShifts.map(v => Math.abs(v) > 0.05 ? '#ef5350' : '#66bb6a');
+
+  const ctx1 = document.getElementById('contaminationChart').getContext('2d');
+  new Chart(ctx1, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'RA shift (arcsec)',
+        data: raShifts,
+        backgroundColor: raColors,
+        borderWidth: 0,
+      }]
+    },
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: i => `RA shift: ${i.parsed.y > 0 ? '+' : ''}${i.parsed.y.toFixed(4)}"` } }
+      },
+      scales: {
+        y: {
+          title: { display: true, text: 'RA shift (arcsec)' },
+          grid: { color: '#f0f0f0' }
+        },
+        x: { ticks: { font: { size: 10 } } }
+      }
+    }
+  });
+
+  const ctx2 = document.getElementById('contaminationDecChart').getContext('2d');
+  new Chart(ctx2, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Dec shift (arcsec)',
+        data: decShifts,
+        backgroundColor: decColors,
+        borderWidth: 0,
+      }]
+    },
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: i => `Dec shift: ${i.parsed.y > 0 ? '+' : ''}${i.parsed.y.toFixed(4)}"` } }
+      },
+      scales: {
+        y: {
+          title: { display: true, text: 'Dec shift (arcsec)' },
+          grid: { color: '#f0f0f0' }
+        },
+        x: { ticks: { font: { size: 10 } } }
+      }
+    }
+  });
+
+  // Table
+  const tbody = document.getElementById('contamination-table-body');
+  nonTargetStations.forEach(s => {
+    const cl = AA01_CLEAN[s];
+    const co = AA01_CONSTANT[s];
+    const raShift  = +(co.rec_ra  - cl.rec_ra ).toFixed(4);
+    const decShift = +(co.rec_dec - cl.rec_dec).toFixed(4);
+    const significant = Math.abs(raShift) > 0.05 || Math.abs(decShift) > 0.05;
+    const st = STATIONS.find(x => x.fake === s);
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="mono">${s}</td>
+      <td>${st.real}</td>
+      <td>${cl.rec_ra.toFixed(4)}"</td>
+      <td>${co.rec_ra.toFixed(4)}"</td>
+      <td>${significant ? `<span class="badge-red">${raShift > 0 ? '+' : ''}${raShift.toFixed(4)}"</span>` : `<span class="badge-green">${raShift > 0 ? '+' : ''}${raShift.toFixed(4)}"</span>`}</td>
+      <td>${cl.rec_dec.toFixed(4)}"</td>
+      <td>${co.rec_dec.toFixed(4)}"</td>
+      <td>${Math.abs(decShift) > 0.05 ? `<span class="badge-red">${decShift > 0 ? '+' : ''}${decShift.toFixed(4)}"</span>` : `<span class="badge-green">${decShift > 0 ? '+' : ''}${decShift.toFixed(4)}"</span>`}</td>
+      <td>${cl.n_obs.toLocaleString()}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+})();
+
+// ============================================================
+// SECTION 5: Detection Matrix
+// ============================================================
+(function buildSection5() {
+  const stations   = ['AA00','AA01','AA02','AA03','AA04','AA05','AA06','AA07','AA08'];
+  const biasTypes  = ['clean','constant','timing','mag_dep','epoch','seasonal','step','dcr','trailing'];
+  const biasLabels = biasTypes.map(b => BIAS_LABELS[b]);
+
+  // Build lookup: [station][bias] -> {det_ra, det_dec}
+  const lookup = {};
+  TARGET_ROWS.forEach(r => {
+    if (!lookup[r.fake]) lookup[r.fake] = {};
+    lookup[r.fake][r.applied_bias] = { det_ra: r.det_ra, det_dec: r.det_dec };
+  });
+
+  function buildMatrix(tableHead, tableBody, field) {
+    const thead = document.getElementById(tableHead);
+    const tbody = document.getElementById(tableBody);
+
+    // Header
+    const hrTr = document.createElement('tr');
+    hrTr.innerHTML = '<th style="background:#2d3a4a;text-align:left;min-width:90px;">Station</th>' +
+      biasLabels.map(b => `<th style="background:#2d3a4a;font-size:0.72rem;">${b}</th>`).join('');
+    thead.appendChild(hrTr);
+
+    // Body
+    stations.forEach(s => {
+      const st = STATIONS.find(x => x.fake === s);
+      const tr = document.createElement('tr');
+      let cells = `<td class="stn-label">${s}<br><span style="font-size:0.75rem;color:#607d8b;">${st.real}</span></td>`;
+      biasTypes.forEach(bt => {
+        const d = lookup[s] && lookup[s][bt];
+        if (bt === 'clean') {
+          cells += `<td class="cell-clean">—</td>`;
+        } else if (!d) {
+          cells += `<td class="cell-na">N/A</td>`;
+        } else {
+          const val = field === 'det_ra' ? d.det_ra : d.det_dec;
+          cells += val
+            ? `<td class="cell-detected">Y</td>`
+            : `<td class="cell-not-detected">N</td>`;
+        }
+      });
+      tr.innerHTML = cells;
+      tbody.appendChild(tr);
+    });
+  }
+
+  buildMatrix('detection-matrix-head', 'detection-matrix-body', 'det_ra');
+  buildMatrix('det-dec-head', 'det-dec-body', 'det_dec');
+
+  // Summary bar chart: detected count per station
+  const detCountRa  = stations.map(s =>
+    biasTypes.filter(bt => bt !== 'clean' && lookup[s] && lookup[s][bt] && lookup[s][bt].det_ra).length
+  );
+  const detCountDec = stations.map(s =>
+    biasTypes.filter(bt => bt !== 'clean' && lookup[s] && lookup[s][bt] && lookup[s][bt].det_dec).length
+  );
+  const maxBias = biasTypes.length - 1; // exclude clean
+
+  const ctx = document.getElementById('detectionSummaryChart').getContext('2d');
+  new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: stations.map(s => `${s}(${STATIONS.find(x=>x.fake===s).real})`),
+      datasets: [
+        {
+          label: 'Detected in RA',
+          data: detCountRa,
+          backgroundColor: '#66bb6a',
+          borderWidth: 0,
+        },
+        {
+          label: 'Detected in Dec',
+          data: detCountDec,
+          backgroundColor: '#42a5f5',
+          borderWidth: 0,
+        }
+      ]
+    },
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'top', labels: { font: { size: 10 } } } },
+      scales: {
+        y: {
+          title: { display: true, text: `# bias types detected (out of ${maxBias})` },
+          max: maxBias + 1,
+          grid: { color: '#f0f0f0' }
+        },
+        x: { ticks: { font: { size: 9 } } }
+      }
+    }
+  });
+})();
+
+// ============================================================
+// SECTION 6: Propagation Floor
+// ============================================================
+(function buildSection6() {
+  const stations = ['AA00','AA01','AA02','AA03','AA04','AA05','AA06','AA07','AA08'];
+  const cleanRows = TARGET_ROWS.filter(r => r.applied_bias === 'clean');
+  const labels = stations.map(s => `${s}(${STATIONS.find(x=>x.fake===s).real})`);
+
+  const cleanRaVals  = stations.map(s => {
+    const r = cleanRows.find(x => x.fake === s);
+    return r ? +r.rec_ra.toFixed(4) : 0;
+  });
+  const cleanDecVals = stations.map(s => {
+    const r = cleanRows.find(x => x.fake === s);
+    return r ? +r.rec_dec.toFixed(4) : 0;
+  });
+
+  const ctx1 = document.getElementById('noiseFloorChart').getContext('2d');
+  new Chart(ctx1, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Recovered mean RA (clean)',
+          data: cleanRaVals,
+          backgroundColor: '#90caf9',
+          borderColor: '#1565c0',
+          borderWidth: 1,
+        },
+        {
+          label: 'Recovered mean Dec (clean)',
+          data: cleanDecVals,
+          backgroundColor: '#a5d6a7',
+          borderColor: '#2e7d32',
+          borderWidth: 1,
+        }
+      ]
+    },
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'top', labels: { font: { size: 10 } } },
+        tooltip: { callbacks: { label: i => `${i.dataset.label}: ${i.parsed.y > 0 ? '+' : ''}${i.parsed.y.toFixed(4)}"` } }
+      },
+      scales: {
+        y: {
+          title: { display: true, text: 'Mean bias (arcsec) — should be ~0' },
+          grid: { color: '#f0f0f0' }
+        },
+        x: { ticks: { font: { size: 9 } } }
+      }
+    }
+  });
+
+  // ASSIST chart
+  const assistLabels = ASSIST_STATS.map(r => r.stn);
+  const ctx2 = document.getElementById('assistChart').getContext('2d');
+  new Chart(ctx2, {
+    type: 'bar',
+    data: {
+      labels: assistLabels,
+      datasets: [
+        {
+          label: 'bias_RA (arcsec)',
+          data: ASSIST_STATS.map(r => r.bias_ra),
+          backgroundColor: ASSIST_STATS.map(r => Math.abs(r.bias_ra) > 0.3 ? '#ef5350' : '#42a5f5'),
+          borderWidth: 0,
+          yAxisID: 'y',
+        },
+        {
+          label: 'RMS_RA (arcsec)',
+          data: ASSIST_STATS.map(r => r.rms_ra),
+          type: 'line',
+          borderColor: '#fb8c00',
+          backgroundColor: 'transparent',
+          borderWidth: 2,
+          pointRadius: 4,
+          yAxisID: 'y',
+        }
+      ]
+    },
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'top', labels: { font: { size: 10 } } } },
+      scales: {
+        y: {
+          title: { display: true, text: 'arcsec' },
+          grid: { color: '#f0f0f0' }
+        },
+        x: { ticks: { font: { size: 10 } } }
+      }
+    }
+  });
+
+  // ASSIST table
+  const tbody = document.getElementById('assist-table-body');
+  ASSIST_STATS.forEach(r => {
+    const isBiased = Math.abs(r.bias_ra) > 0.3 || Math.abs(r.bias_dec) > 0.3;
+    const isHighChi2 = r.chi2 > 10;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><strong>${r.stn}</strong></td>
+      <td>${r.n_obs.toLocaleString()}</td>
+      <td>${r.n_obj}</td>
+      <td>${r.bias_ra >= 0 ? '+' : ''}${r.bias_ra.toFixed(3)}"</td>
+      <td>${r.bias_dec >= 0 ? '+' : ''}${r.bias_dec.toFixed(3)}"</td>
+      <td>${r.rms_ra.toFixed(3)}"</td>
+      <td>${r.rms_dec.toFixed(3)}"</td>
+      <td>${isHighChi2 ? `<span class="badge-red">${r.chi2.toFixed(2)}</span>` : r.chi2.toFixed(2)}</td>
+      <td>${isBiased ? '<span class="badge-yellow">Biased</span>' : isHighChi2 ? '<span class="badge-red">High chi2</span>' : '<span class="badge-green">OK</span>'}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+})();
+</script>
+
+</body>
+</html>

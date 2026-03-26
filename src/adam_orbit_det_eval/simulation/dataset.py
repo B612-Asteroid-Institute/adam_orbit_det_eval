@@ -226,6 +226,9 @@ class SimulationDataset:
 
         synthetic_chunks: list = []
         truth_orbit_chunks: list = []
+        # Accumulate per-station bias sums for empirical expected-mean computation.
+        # Maps real_code -> [sum_ra_arcsec, sum_dec_arcsec, n_obs]
+        _station_bias_sums: dict = {}
 
         for i, object_id in enumerate(self.config.objects):
             logger.info(
@@ -253,7 +256,7 @@ class SimulationDataset:
             obj_seed = self.config.noise_seed + i
 
             try:
-                syn_obs = generate_synthetic_observations(
+                syn_obs, obj_bias_stats = generate_synthetic_observations(
                     truth_orbit=truth_orbit,
                     obs_template=obj_obs,
                     observatory_map=self.config.observatory_map,
@@ -272,6 +275,14 @@ class SimulationDataset:
             if len(syn_obs) == 0:
                 logger.warning(f"{object_id}: no synthetic observations generated, skipping.")
                 continue
+
+            # Accumulate bias sums (real_code -> [sum_ra, sum_dec, n]).
+            for rc, (sum_ra, sum_dec, n) in obj_bias_stats.items():
+                if rc not in _station_bias_sums:
+                    _station_bias_sums[rc] = [0.0, 0.0, 0]
+                _station_bias_sums[rc][0] += sum_ra
+                _station_bias_sums[rc][1] += sum_dec
+                _station_bias_sums[rc][2] += n
 
             synthetic_chunks.append(syn_obs)
             truth_orbit_chunks.append(obj_orbit)
@@ -295,8 +306,22 @@ class SimulationDataset:
         all_orbits.to_parquet(orbits_path)
         logger.info(f"Wrote truth orbits → {orbits_path}")
 
+        # Compute empirical per-station bias means from accumulated sums.
+        empirical_means = {
+            rc: (sums[0] / sums[2], sums[1] / sums[2])
+            for rc, sums in _station_bias_sums.items()
+            if sums[2] > 0
+        }
+        logger.info(
+            f"Empirical bias means computed for {len(empirical_means)} stations: "
+            + ", ".join(
+                f"{rc}=(ra={v[0]:+.3f}\", dec={v[1]:+.3f}\")"
+                for rc, v in sorted(empirical_means.items())
+            )
+        )
+
         # Write truth biases CSV
-        truth_df = self.config.observatory_map.truth_table()
+        truth_df = self.config.observatory_map.truth_table(empirical_means=empirical_means)
         truth_csv = output_dir / "truth_biases.csv"
         truth_df.to_csv(truth_csv, index=False)
         logger.info(f"Wrote truth biases → {truth_csv}")

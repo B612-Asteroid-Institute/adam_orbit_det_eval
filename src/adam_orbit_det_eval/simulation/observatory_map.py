@@ -12,7 +12,7 @@ provides lookup utilities.
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -143,7 +143,10 @@ class ObservatoryMap:
     # Truth table
     # ------------------------------------------------------------------
 
-    def truth_table(self) -> pd.DataFrame:
+    def truth_table(
+        self,
+        empirical_means: Optional[Dict[str, Tuple[float, float]]] = None,
+    ) -> pd.DataFrame:
         """
         Return a DataFrame with one row per fake observatory.
 
@@ -152,9 +155,24 @@ class ObservatoryMap:
         fake_code, real_code, astcat, noise_sigma_ra_arcsec,
         noise_sigma_dec_arcsec, bias_type, bias_params_json,
         expected_mean_ra_arcsec, expected_mean_dec_arcsec
+
+        Parameters
+        ----------
+        empirical_means : dict, optional
+            Maps ``real_code -> (mean_ra_arcsec, mean_dec_arcsec)``.  When
+            provided, overrides the analytically-derived expected mean for any
+            station whose real code appears in the dict.  Pass this for
+            sample-dependent biases (``TrailingBias``, ``DCRBias``, etc.)
+            whose mean cannot be predicted without knowing the actual
+            observation geometry.
         """
         rows = []
         for a in self.assignments:
+            if empirical_means is not None and a.real_code in empirical_means:
+                exp_ra, exp_dec = empirical_means[a.real_code]
+            else:
+                exp_ra = _expected_mean_ra(a)
+                exp_dec = _expected_mean_dec(a)
             rows.append(
                 {
                     "fake_code": a.fake_code,
@@ -164,8 +182,8 @@ class ObservatoryMap:
                     "noise_sigma_dec_arcsec": a.noise_sigma_dec,
                     "bias_type": a.bias_type,
                     "bias_params_json": json.dumps(a.bias_params_dict()),
-                    "expected_mean_ra_arcsec": _expected_mean_ra(a),
-                    "expected_mean_dec_arcsec": _expected_mean_dec(a),
+                    "expected_mean_ra_arcsec": exp_ra,
+                    "expected_mean_dec_arcsec": exp_dec,
                 }
             )
         return pd.DataFrame(rows)

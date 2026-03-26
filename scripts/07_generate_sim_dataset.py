@@ -146,7 +146,7 @@ def build_default_observatory_map():
     AA03  703  MagnitudeDependentBias(0.05, 0.02)
     AA04  691  CatalogEpochBias(5.0 years)
     AA05  W84  SeasonalBias(0.3, 0.1)
-    AA06  568  StepChangeBias (split arc)
+    AA06  W68  StepChangeBias (split arc)   [was 568 (24 obs); T08 co-located with T09 (Hawaii)]
     AA07  T09  DCRBias
     AA08  V00  TrailingBias(0.1)
 
@@ -221,9 +221,9 @@ def build_default_observatory_map():
         ),
         FakeObservatory(
             fake_code="AA06",
-            real_code="568",
-            noise_sigma_ra=0.35,
-            noise_sigma_dec=0.35,
+            real_code="W68",  # ATLAS Chile, Rio Hurtado (4.8k obs; T08 co-located with T09)
+            noise_sigma_ra=0.25,
+            noise_sigma_dec=0.25,
             biases=[
                 StepChangeBias(
                     delta_ra_before=0.0,
@@ -233,7 +233,7 @@ def build_default_observatory_map():
                     change_mjd=STEP_MJD,
                 )
             ],
-            astcat="Gaia2",
+            astcat="Gaia3E",
         ),
         FakeObservatory(
             fake_code="AA07",

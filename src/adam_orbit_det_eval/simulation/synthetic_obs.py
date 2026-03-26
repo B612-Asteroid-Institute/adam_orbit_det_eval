@@ -28,21 +28,28 @@ _DAYS_PER_YEAR = 365.25
 # Longitude is East-positive; latitude is geodetic.
 # Used as fallback when no MPC ObsCodes catalog is available.
 # ---------------------------------------------------------------------------
+# Geocentric latitudes and East-positive longitudes from MPC observatory parallax
+# constants.  These differ from geodetic latitude by ~0.1° (negligible for
+# zenith-angle calculations at the arcsec level).  Longitudes > 180° are
+# converted to the range (-180, 180].
 _MPC_GEODETIC: Dict[str, Tuple[float, float]] = {
-    "F51": (20.7073, -156.2573),   # Pan-STARRS 1, Haleakala
-    "F52": (20.7073, -156.2573),   # Pan-STARRS 2, Haleakala (same site)
-    "G96": (32.4428, -110.7885),   # Mt. Lemmon Survey
-    "703": (32.4428, -110.7885),   # Catalina Sky Survey (same mountain)
-    "691": (31.6814, -110.8779),   # Spacewatch, Kitt Peak
-    "W84": (-24.6157, -70.1920),   # Cerro Tololo, Chile
-    "568": (33.3564, -116.8650),   # Mauna Kea (Palomar)
-    "T09": (-31.2722, -70.7378),   # ATLAS Chile, El Sauce
-    "V00": (-24.6157, -70.1920),   # Cerro Tololo-DECam
-    "X05": (-30.2407, -70.7366),   # Cerro Pachon, Rubin/LSST
-    "T05": (19.8333, -155.4750),   # ATLAS Mauna Loa
-    "I41": (-31.2722, -70.7378),   # El Sauce
-    "W68": (-29.0056, -70.7389),   # Las Cumbres 1m
-    "O18": (-22.5340, -68.1767),   # Atacama
+    "F51": (20.5803, -156.2559),   # Pan-STARRS 1, Haleakala
+    "F52": (20.5805, -156.2559),   # Pan-STARRS 2, Haleakala
+    "G96": (32.2688, -110.7887),   # Mt. Lemmon Survey
+    "703": (32.2432, -110.7326),   # Catalina Sky Survey
+    "691": (31.7897, -111.6003),   # Spacewatch, Kitt Peak
+    "W84": (-30.0027,  -70.8064),  # Cerro Tololo-DECam, Chile
+    "568": (19.7037,  -155.4722),  # Maunakea (Subaru/CFHT area)
+    "T05": (20.5806,  -156.2570),  # ATLAS-HKO, Haleakala
+    "T08": (19.4152,  -155.5761),  # ATLAS-MLO, Mauna Loa
+    "T09": (19.7031,  -155.4760),  # Subaru Telescope, Maunakea
+    "V00": (31.7906,  -111.6002),  # Kitt Peak-Bok
+    "W68": (-30.3031,  -70.7650),  # ATLAS Chile, Rio Hurtado
+    "M22": (-32.2064,   20.8106),  # ATLAS South Africa, Sutherland
+    "I41": (33.1809,  -116.8598),  # Palomar Mountain-ZTF
+    "704": (33.6406,  -106.6591),  # Lincoln Laboratory ETS, New Mexico
+    "X05": (-30.2407,  -70.7366),  # Cerro Pachon, Rubin/LSST
+    "O18": (-22.5340,  -68.1767),  # Atacama
 }
 
 
@@ -209,8 +216,16 @@ def generate_truth_ephemeris(
                         np.array(cached["dec_true_deg"])[mask],
                         np.array(cached["obstime_mjd"])[mask],
                     )
-            if result:
+            # Only use the cache if every requested code was found.
+            # If the station list changed (e.g. 568 → T08), missing codes
+            # would be silently skipped, so fall through to recompute.
+            if set(result.keys()) >= set(real_codes):
                 return result
+            missing = set(real_codes) - set(result.keys())
+            logger.debug(
+                f"Cache hit for {cache_path.name} but missing codes {missing}; "
+                "recomputing all stations."
+            )
 
     # ------------------------------------------------------------------
     # Build per-code ephemerides
@@ -300,7 +315,7 @@ def generate_synthetic_observations(
     noise_seed: int = 42,
     cache_dir: Optional[Path] = None,
     object_id: Optional[str] = None,
-) -> "MPCObservations":  # noqa: F821
+) -> Tuple["MPCObservations", Dict[str, Tuple[float, float, int]]]:  # noqa: F821
     """
     Generate synthetic ``MPCObservations`` from a truth orbit and template.
 
@@ -332,13 +347,21 @@ def generate_synthetic_observations(
 
     Returns
     -------
-    MPCObservations
+    (MPCObservations, dict)
         Synthetic observations table with fake station codes, injected noise
-        and bias, and explicit rmsra/rmsdec uncertainties.
+        and bias, and explicit rmsra/rmsdec uncertainties.  The second element
+        maps ``real_code -> (sum_bias_ra_arcsec, sum_bias_dec_arcsec, n_obs)``
+        — the running sum of pure bias values (excluding noise) for each
+        station across this object's observations.  Callers accumulate these
+        across objects then divide by total n to get the grand empirical mean,
+        which is stored in ``truth_biases.csv`` for sample-dependent biases
+        such as ``TrailingBias`` and ``DCRBias``.
     """
     from mpcq.observations import MPCObservations
 
     rng = np.random.default_rng(noise_seed)
+    # Accumulate pure bias values (no noise) per real_code for truth-table means.
+    _bias_sums: Dict[str, List[float]] = {}  # real_code -> [sum_ra, sum_dec, count]
 
     # ------------------------------------------------------------------
     # 1. Filter template to mapped stations only
@@ -349,7 +372,7 @@ def generate_synthetic_observations(
     keep_mask = np.array([s in mapped_real for s in template_stns])
     if not keep_mask.any():
         logger.warning("No template observations matched any mapped real code.")
-        return MPCObservations.empty()
+        return MPCObservations.empty(), {}
 
     # Work with filtered slice
     filtered = obs_template.apply_mask(pa.array(keep_mask))
@@ -478,6 +501,17 @@ def generate_synthetic_observations(
             object_rate=obj_rate,
         )
 
+        # Accumulate pure bias (no noise) for per-station empirical mean.
+        # Use nansum so that observations with NaN magnitude (which produce
+        # NaN bias for MagnitudeDependentBias) are excluded rather than
+        # poisoning the running total.
+        finite_mask = np.isfinite(d_ra_cosdec) & np.isfinite(d_dec)
+        if rc not in _bias_sums:
+            _bias_sums[rc] = [0.0, 0.0, 0]
+        _bias_sums[rc][0] += float(np.sum(d_ra_cosdec[finite_mask]))
+        _bias_sums[rc][1] += float(np.sum(d_dec[finite_mask]))
+        _bias_sums[rc][2] += int(finite_mask.sum())
+
         # Total offset in arcsec (noise + bias), both in cos(dec)-corrected frame
         total_ra_offset_arcsec = noise_ra_ok + d_ra_cosdec  # Δα·cos(δ) in arcsec
         total_dec_offset_arcsec = noise_dec_ok + d_dec       # Δδ in arcsec
@@ -519,7 +553,7 @@ def generate_synthetic_observations(
         out_astcat = out_astcat[valid]
 
     if len(out_ra) == 0:
-        return MPCObservations.empty()
+        return MPCObservations.empty(), {}
 
     # ------------------------------------------------------------------
     # 4. Build MPCObservations output table
@@ -585,7 +619,14 @@ def generate_synthetic_observations(
         logger.error(f"Failed to build output MPCObservations table: {exc}")
         raise
 
-    return MPCObservations(table)
+    # Return raw sums+count so callers can accumulate across objects before
+    # computing the grand mean.  Dict maps real_code -> (sum_ra, sum_dec, n).
+    bias_sums: Dict[str, Tuple[float, float, int]] = {
+        rc: (sums[0], sums[1], sums[2])
+        for rc, sums in _bias_sums.items()
+        if sums[2] > 0
+    }
+    return MPCObservations(table), bias_sums
 
 
 # ---------------------------------------------------------------------------

@@ -31,6 +31,7 @@ dependencies = [
   "matplotlib>=3.10.1",
   "plotly",
   "nbformat>=4.2.0",
+  "google-cloud-bigquery>=3.40.1",
 ]
 
 [build-system]

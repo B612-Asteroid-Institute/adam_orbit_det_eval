@@ -1,0 +1,57 @@
+{
+  "name": "mpc-isolation-study",
+  "namespace": "research",
+  "queue": "cpu-spot",
+  "mode": "indexed",
+  "build": {
+    "workspace_root": "/Users/kathleenkiker/claude_cli",
+    "projects": [
+      {
+        "path": "adam_core",
+        "build": "true",
+        "install": "PDM_BUILD_SCM_VERSION=99.0.0 pip install .",
+        "test": "false"
+      },
+      {
+        "path": "adam_assist",
+        "build": "true",
+        "install": "pip install .",
+        "test": "false"
+      },
+      {
+        "path": "adam_orbit_det_eval",
+        "build": "true",
+        "install": "pip install .",
+        "test": "false"
+      }
+    ],
+    "image": "us-west1-docker.pkg.dev/moeyens-thor-dev/ai/mpc-isolation-study:latest",
+    "method": "cloud",
+    "strategy": "layered"
+  },
+  "resources": {
+    "cpu": "16",
+    "memory": "32Gi",
+    "gpu": 0
+  },
+  "job": {
+    "completions": 81,
+    "parallelism": 64,
+    "ttl_seconds_after_finished": 172800
+  },
+  "retry": {
+    "backoff_limit_per_index": 2,
+    "max_failed_indexes": 8
+  },
+  "outputs": {
+    "gcs_prefix": "gs://exp-research/mpc-isolation-study"
+  },
+  "command": [
+    "python",
+    "/app/adam_orbit_det_eval/scripts/12_run_looo_cloud_shard.py",
+    "--gcs-input-prefix", "gs://exp-research/mpc-isolation-study/input",
+    "--gcs-output-prefix", "gs://exp-research/mpc-isolation-study/output",
+    "--propagator", "assist",
+    "--max-processes", "14"
+  ]
+}

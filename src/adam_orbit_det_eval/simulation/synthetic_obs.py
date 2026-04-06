@@ -95,8 +95,12 @@ def _compute_obs_geometry(
 
     Returns
     -------
-    (zenith_angle_deg, parallactic_angle_deg, object_rate_arcsec_per_hour)
-        All three are 1-D arrays of the same length as *ra_deg*.
+    (zenith_angle_deg, parallactic_angle_deg, object_rate_arcsec_per_hour,
+     velocity_ra_unit, velocity_dec_unit)
+        Five 1-D arrays of the same length as *ra_deg*.
+        ``velocity_ra_unit`` and ``velocity_dec_unit`` are the unit vector
+        components of the sky-plane motion in the RA·cos(dec) and Dec
+        directions respectively (dimensionless).
     """
     lat_rad = np.deg2rad(site_lat_deg)
     dec_rad = np.deg2rad(dec_deg)
@@ -136,21 +140,27 @@ def _compute_obs_geometry(
     )
     parallactic_angle_deg = np.degrees(np.arctan2(sin_q, cos_q))
 
-    # Object rate: approximate from RA/Dec change between adjacent observations.
-    # Use finite differences; endpoints use one-sided differences.
+    # Object rate and motion direction from RA/Dec finite differences.
     if len(ra_deg) >= 2:
         dt_hours = np.gradient(obstime_mjd) * 24.0
         dra = np.gradient(ra_deg) * np.cos(dec_rad) * 3600.0  # arcsec
         ddec = np.gradient(dec_deg) * 3600.0  # arcsec
+        magnitude = np.sqrt(dra**2 + ddec**2)
         with np.errstate(divide="ignore", invalid="ignore"):
-            rate = np.sqrt(dra**2 + ddec**2) / np.where(
+            rate = magnitude / np.where(
                 np.abs(dt_hours) > 1e-10, np.abs(dt_hours), np.nan
             )
         rate = np.where(np.isfinite(rate), rate, 0.0)
+        # Unit vector of sky-plane motion direction
+        nonzero = magnitude > 0
+        v_ra_unit = np.where(nonzero, dra / np.where(nonzero, magnitude, 1.0), 0.0)
+        v_dec_unit = np.where(nonzero, ddec / np.where(nonzero, magnitude, 1.0), 0.0)
     else:
         rate = np.zeros_like(ra_deg)
+        v_ra_unit = np.ones_like(ra_deg)   # fallback: assume +RA direction
+        v_dec_unit = np.zeros_like(ra_deg)
 
-    return zenith_angle_deg, parallactic_angle_deg, rate
+    return zenith_angle_deg, parallactic_angle_deg, rate, v_ra_unit, v_dec_unit
 
 
 # ---------------------------------------------------------------------------
@@ -444,8 +454,8 @@ def generate_synthetic_observations(
         site_geodetic = _get_site_geodetic(rc)
         if site_geodetic is not None:
             lat_deg, lon_deg = site_geodetic
-            zenith_ang, parallactic_ang, obj_rate = _compute_obs_geometry(
-                ra_true, dec_true, ephem_mjds, lat_deg, lon_deg
+            zenith_ang, parallactic_ang, obj_rate, vel_ra_unit, vel_dec_unit = (
+                _compute_obs_geometry(ra_true, dec_true, ephem_mjds, lat_deg, lon_deg)
             )
             # Filter out below-horizon observations (z ≥ 90°).
             # These arise from MPC data quality issues (wrong station code at
@@ -469,6 +479,8 @@ def generate_synthetic_observations(
                 zenith_ang = zenith_ang[horizon_ok]
                 parallactic_ang = parallactic_ang[horizon_ok]
                 obj_rate = obj_rate[horizon_ok]
+                vel_ra_unit = vel_ra_unit[horizon_ok]
+                vel_dec_unit = vel_dec_unit[horizon_ok]
                 obs_mag_ok = obs_mag[horizon_ok]
                 noise_ra_ok = noise_ra[horizon_ok]
                 noise_dec_ok = noise_dec[horizon_ok]
@@ -482,7 +494,7 @@ def generate_synthetic_observations(
                 noise_dec_ok = noise_dec
                 rc_indices_ok = rc_indices
         else:
-            zenith_ang = parallactic_ang = obj_rate = None
+            zenith_ang = parallactic_ang = obj_rate = vel_ra_unit = vel_dec_unit = None
             ra_true_ok = ra_true
             dec_true_ok = dec_true
             ephem_mjds_ok = ephem_mjds
@@ -499,6 +511,8 @@ def generate_synthetic_observations(
             zenith_angle=zenith_ang,
             parallactic_angle=parallactic_ang,
             object_rate=obj_rate,
+            velocity_ra_unit=vel_ra_unit,
+            velocity_dec_unit=vel_dec_unit,
         )
 
         # Accumulate pure bias (no noise) for per-station empirical mean.

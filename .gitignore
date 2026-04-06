@@ -1,3 +1,28 @@
+# macOS metadata
+.DS_Store
+
+# Large data products — too big for GitHub
+data/looo_results/
+data/looo_sample_3500/
+data/sim_products/cache/
+data/sim_products/cache_assist/
+data/sim_products/cache_neo100/
+# Raw observation + orbit parquet files (re-fetched from BQ)
+data/looo_sample/*.parquet
+data/looo_sample_lsst100/*.parquet
+# Intermediate/iteration NEO sample (30-obj); final samples are sim_sample/ and sim_sample_neo100/
+data/sim_sample_neo/
+# Full per-station LOOO result trees (GB-scale); keep only top-level CSVs
+data/sim_products/isolation_study/
+data/sim_products/isolation_study_assist/
+data/sim_products/isolation_study_twobody_atfix_20260326/
+data/sim_products/isolation_study_neo_timing_20260401/
+data/sim_products/isolation_study_neo100_timing_20260402/
+data/sim_products/isolation_study_full_20260331/AA*/
+data/sim_products/isolation_study_neo100_20260403/AA*/
+data/sim_products/phase1_assist/
+data/sim_products/phase1_constant_bias/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

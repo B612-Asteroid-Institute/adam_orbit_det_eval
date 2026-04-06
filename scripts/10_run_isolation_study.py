@@ -42,6 +42,7 @@ import contextlib
 import json
 import logging
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 logging.basicConfig(
@@ -338,6 +339,14 @@ def parse_args():
         "--propagator", choices=["twobody", "assist"], default="twobody",
     )
     p.add_argument("--max-processes", type=int, default=6)
+    p.add_argument(
+        "--scenario-parallelism", type=int, default=1,
+        help=(
+            "Number of scenarios to run concurrently (default: 1 = sequential). "
+            "Total worker count = scenario_parallelism × max_processes. "
+            "On a 96-core VM, try --scenario-parallelism 16 --max-processes 6."
+        ),
+    )
     p.add_argument("--threshold", type=float, default=0.1,
                    help="Recovery threshold arcsec (default: 0.1)")
     p.add_argument(
@@ -403,30 +412,60 @@ def main():
     all_rows = []
     failed = []
 
-    for i, (fake_code, bias_name) in enumerate(scenarios):
-        sname = scenario_id(fake_code, bias_name)
-        logger.info(f"[{i+1}/{len(scenarios)}] {sname}")
-        try:
-            rows = run_scenario(
-                fake_code=fake_code,
-                bias_name=bias_name,
-                obs_template=obs_template,
-                truth_orbits=truth_orbits,
-                object_ids=object_ids,
-                propagator_class=propagator_class,
-                output_base=args.output_dir,
-                cache_dir=cache_dir,
-                max_processes=args.max_processes,
-                threshold_arcsec=args.threshold,
-                force=args.force,
-            )
-            if rows:
-                all_rows.extend(rows)
-            else:
+    scenario_parallelism = getattr(args, "scenario_parallelism", 1)
+
+    def _run_one(fc, bn, idx, total):
+        sname = scenario_id(fc, bn)
+        logger.info(f"[{idx}/{total}] {sname}")
+        return run_scenario(
+            fake_code=fc,
+            bias_name=bn,
+            obs_template=obs_template,
+            truth_orbits=truth_orbits,
+            object_ids=object_ids,
+            propagator_class=propagator_class,
+            output_base=args.output_dir,
+            cache_dir=cache_dir,
+            max_processes=args.max_processes,
+            threshold_arcsec=args.threshold,
+            force=args.force,
+        )
+
+    if scenario_parallelism <= 1:
+        for i, (fake_code, bias_name) in enumerate(scenarios):
+            sname = scenario_id(fake_code, bias_name)
+            try:
+                rows = _run_one(fake_code, bias_name, i + 1, len(scenarios))
+                if rows:
+                    all_rows.extend(rows)
+                else:
+                    failed.append(sname)
+            except Exception as exc:
+                logger.error(f"Scenario {sname} failed: {exc}", exc_info=True)
                 failed.append(sname)
-        except Exception as exc:
-            logger.error(f"Scenario {sname} failed: {exc}", exc_info=True)
-            failed.append(sname)
+    else:
+        logger.info(
+            f"Running {len(scenarios)} scenarios with scenario_parallelism={scenario_parallelism} "
+            f"(total workers ≈ {scenario_parallelism * args.max_processes})"
+        )
+        # ThreadPoolExecutor: scenarios dispatch work; CPU parallelism comes from
+        # the ProcessPoolExecutor inside each run_scenario → _run_looo call.
+        with ThreadPoolExecutor(max_workers=scenario_parallelism) as pool:
+            futures = {
+                pool.submit(_run_one, fc, bn, i + 1, len(scenarios)): scenario_id(fc, bn)
+                for i, (fc, bn) in enumerate(scenarios)
+            }
+            for fut in as_completed(futures):
+                sname = futures[fut]
+                try:
+                    rows = fut.result()
+                    if rows:
+                        all_rows.extend(rows)
+                    else:
+                        failed.append(sname)
+                except Exception as exc:
+                    logger.error(f"Scenario {sname} failed: {exc}", exc_info=True)
+                    failed.append(sname)
 
     # Write combined CSV
     if all_rows:

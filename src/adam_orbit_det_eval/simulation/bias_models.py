@@ -42,6 +42,8 @@ class BiasModel(ABC):
         object_rate: _ArrayOrNone = None,
         field_ra: _ArrayOrNone = None,
         field_dec: _ArrayOrNone = None,
+    velocity_ra_unit: _ArrayOrNone = None,
+    velocity_dec_unit: _ArrayOrNone = None,
     ) -> _BiasResult:
         """
         Compute astrometric bias offsets.
@@ -66,6 +68,14 @@ class BiasModel(ABC):
             Field centre RA in degrees (N,). May be None.
         field_dec : np.ndarray or None
             Field centre Dec in degrees (N,). May be None.
+        velocity_ra_unit : np.ndarray or None
+            Unit vector component of sky-plane motion in the RA·cos(dec)
+            direction (dimensionless, N,). Together with ``velocity_dec_unit``
+            defines the instantaneous direction of motion. May be None when
+            geodetic site coordinates are unavailable.
+        velocity_dec_unit : np.ndarray or None
+            Unit vector component of sky-plane motion in the Dec direction
+            (dimensionless, N,). May be None.
 
         Returns
         -------
@@ -106,13 +116,15 @@ class CompoundBias(BiasModel):
         object_rate: _ArrayOrNone = None,
         field_ra: _ArrayOrNone = None,
         field_dec: _ArrayOrNone = None,
+    velocity_ra_unit: _ArrayOrNone = None,
+    velocity_dec_unit: _ArrayOrNone = None,
     ) -> _BiasResult:
         total_ra = np.zeros_like(ra)
         total_dec = np.zeros_like(dec)
         for b in self.biases:
             d_ra, d_dec = b.apply(
                 ra, dec, obstime, mag, zenith_angle, parallactic_angle,
-                object_rate, field_ra, field_dec,
+                object_rate, field_ra, field_dec, velocity_ra_unit, velocity_dec_unit,
             )
             total_ra += d_ra
             total_dec += d_dec
@@ -136,7 +148,7 @@ class ConstantBias(BiasModel):
 
     def apply(self, ra, dec, obstime, mag=None, zenith_angle=None,
               parallactic_angle=None, object_rate=None, field_ra=None,
-              field_dec=None) -> _BiasResult:
+              field_dec=None, velocity_ra_unit=None, velocity_dec_unit=None) -> _BiasResult:
         return (
             np.full_like(ra, self.delta_ra),
             np.full_like(dec, self.delta_dec),
@@ -162,7 +174,7 @@ class FieldRotationBias(BiasModel):
 
     def apply(self, ra, dec, obstime, mag=None, zenith_angle=None,
               parallactic_angle=None, object_rate=None, field_ra=None,
-              field_dec=None) -> _BiasResult:
+              field_dec=None, velocity_ra_unit=None, velocity_dec_unit=None) -> _BiasResult:
         if field_ra is None or field_dec is None:
             logger.warning("FieldRotationBias requires field_ra/field_dec; returning zero bias.")
             return _zeros_like(ra)
@@ -198,7 +210,7 @@ class PlateScaleBias(BiasModel):
 
     def apply(self, ra, dec, obstime, mag=None, zenith_angle=None,
               parallactic_angle=None, object_rate=None, field_ra=None,
-              field_dec=None) -> _BiasResult:
+              field_dec=None, velocity_ra_unit=None, velocity_dec_unit=None) -> _BiasResult:
         if field_ra is None or field_dec is None:
             logger.warning("PlateScaleBias requires field_ra/field_dec; returning zero bias.")
             return _zeros_like(ra)
@@ -246,7 +258,7 @@ class CatalogEpochBias(BiasModel):
 
     def apply(self, ra, dec, obstime, mag=None, zenith_angle=None,
               parallactic_angle=None, object_rate=None, field_ra=None,
-              field_dec=None) -> _BiasResult:
+              field_dec=None, velocity_ra_unit=None, velocity_dec_unit=None) -> _BiasResult:
         # mas/yr * yr → mas → arcsec
         d_ra = self.pm_ra_median_masyr * self.epoch_error_years / 1000.0
         d_dec = self.pm_dec_median_masyr * self.epoch_error_years / 1000.0
@@ -269,15 +281,10 @@ class TimingBias(BiasModel):
     """
     Constant clock offset → along-track position shift.
 
-    Requires object_rate (arcsec/hour) and a direction angle.  When no rate
-    information is available the bias manifests equally in RA and Dec; in
-    practice the LOOO pipeline will see near-zero mean because the along-track
-    direction rotates over time.
-
-    Implementation: shift = delta_t_sec * rate / 3600.0  (arcsec), applied
-    in the +RA direction.  In absence of the actual velocity vector we use
-    only the RA component (a conservative choice; the design note says the
-    LOOO will see near-zero mean average for this bias type).
+    shift = delta_t_sec * rate / 3600.0  (arcsec), projected along the
+    object's actual sky-plane motion direction via velocity_ra_unit /
+    velocity_dec_unit.  When the velocity direction is unavailable the shift
+    is applied in the +RA direction as a fallback.
     """
 
     def __init__(self, delta_t_sec: float) -> None:
@@ -285,7 +292,7 @@ class TimingBias(BiasModel):
 
     def apply(self, ra, dec, obstime, mag=None, zenith_angle=None,
               parallactic_angle=None, object_rate=None, field_ra=None,
-              field_dec=None) -> _BiasResult:
+              field_dec=None, velocity_ra_unit=None, velocity_dec_unit=None) -> _BiasResult:
         if object_rate is None:
             logger.warning(
                 "TimingBias: object_rate is None; applying timing shift in RA only "
@@ -295,8 +302,10 @@ class TimingBias(BiasModel):
         else:
             rate = np.asarray(object_rate, dtype=float)
 
-        # shift in arcsec along track (approximated as RA direction)
-        shift = self.delta_t_sec / 3600.0 * rate
+        shift = self.delta_t_sec / 3600.0 * rate  # arcsec, scalar magnitude
+        if velocity_ra_unit is not None and velocity_dec_unit is not None:
+            return shift * np.asarray(velocity_ra_unit), shift * np.asarray(velocity_dec_unit)
+        # Fallback: RA-only (old behaviour)
         return shift, np.zeros_like(dec)
 
     def params_dict(self) -> dict:
@@ -312,7 +321,7 @@ class ClockDrift(BiasModel):
 
     def apply(self, ra, dec, obstime, mag=None, zenith_angle=None,
               parallactic_angle=None, object_rate=None, field_ra=None,
-              field_dec=None) -> _BiasResult:
+              field_dec=None, velocity_ra_unit=None, velocity_dec_unit=None) -> _BiasResult:
         years_elapsed = (obstime - self.ref_mjd) / 365.25
         delta_t = self.drift_sec_per_year * years_elapsed  # seconds
 
@@ -321,7 +330,9 @@ class ClockDrift(BiasModel):
         else:
             rate = np.asarray(object_rate, dtype=float)
 
-        shift = delta_t / 3600.0 * rate
+        shift = delta_t / 3600.0 * rate  # arcsec, scalar magnitude
+        if velocity_ra_unit is not None and velocity_dec_unit is not None:
+            return shift * np.asarray(velocity_ra_unit), shift * np.asarray(velocity_dec_unit)
         return shift, np.zeros_like(dec)
 
     def params_dict(self) -> dict:
@@ -364,7 +375,7 @@ class DCRBias(BiasModel):
 
     def apply(self, ra, dec, obstime, mag=None, zenith_angle=None,
               parallactic_angle=None, object_rate=None, field_ra=None,
-              field_dec=None) -> _BiasResult:
+              field_dec=None, velocity_ra_unit=None, velocity_dec_unit=None) -> _BiasResult:
         if zenith_angle is None or parallactic_angle is None:
             logger.warning(
                 "DCRBias requires zenith_angle and parallactic_angle; returning zero bias."
@@ -420,7 +431,7 @@ class RefractionModelError(BiasModel):
 
     def apply(self, ra, dec, obstime, mag=None, zenith_angle=None,
               parallactic_angle=None, object_rate=None, field_ra=None,
-              field_dec=None) -> _BiasResult:
+              field_dec=None, velocity_ra_unit=None, velocity_dec_unit=None) -> _BiasResult:
         if zenith_angle is None:
             logger.warning(
                 "RefractionModelError requires zenith_angle; returning zero bias."
@@ -468,7 +479,7 @@ class CTEBias(BiasModel):
 
     def apply(self, ra, dec, obstime, mag=None, zenith_angle=None,
               parallactic_angle=None, object_rate=None, field_ra=None,
-              field_dec=None) -> _BiasResult:
+              field_dec=None, velocity_ra_unit=None, velocity_dec_unit=None) -> _BiasResult:
         pa_rad = np.deg2rad(self.readout_direction_deg)
         # PA = East of North → (sin(PA), cos(PA)) = (RA, Dec) unit components
         d_ra = np.full_like(ra, self.amplitude_arcsec * np.sin(pa_rad))
@@ -491,9 +502,10 @@ class TrailingBias(BiasModel):
     """
     Centroid pulled in direction of motion.
 
-    Δ = trailing_factor × object_rate (arcsec/hour), applied in the +RA
-    direction (approximate; full implementation would require the actual
-    velocity direction).
+    Δ = trailing_factor × object_rate (arcsec/hour), projected along the
+    object's actual sky-plane motion direction via velocity_ra_unit /
+    velocity_dec_unit.  When the velocity direction is unavailable the shift
+    falls back to the +RA direction.
     """
 
     def __init__(self, trailing_factor: float) -> None:
@@ -501,13 +513,16 @@ class TrailingBias(BiasModel):
 
     def apply(self, ra, dec, obstime, mag=None, zenith_angle=None,
               parallactic_angle=None, object_rate=None, field_ra=None,
-              field_dec=None) -> _BiasResult:
+              field_dec=None, velocity_ra_unit=None, velocity_dec_unit=None) -> _BiasResult:
         if object_rate is None:
             logger.warning(
                 "TrailingBias requires object_rate; returning zero bias."
             )
             return _zeros_like(ra)
         shift = self.trailing_factor * np.asarray(object_rate, dtype=float)
+        if velocity_ra_unit is not None and velocity_dec_unit is not None:
+            return shift * np.asarray(velocity_ra_unit), shift * np.asarray(velocity_dec_unit)
+        # Fallback: RA-only (used when geodetic site coords unavailable)
         return shift, np.zeros_like(dec)
 
     def params_dict(self) -> dict:
@@ -529,7 +544,7 @@ class MagnitudeDependentBias(BiasModel):
 
     def apply(self, ra, dec, obstime, mag=None, zenith_angle=None,
               parallactic_angle=None, object_rate=None, field_ra=None,
-              field_dec=None) -> _BiasResult:
+              field_dec=None, velocity_ra_unit=None, velocity_dec_unit=None) -> _BiasResult:
         if mag is None:
             logger.warning(
                 "MagnitudeDependentBias requires mag; returning zero bias."
@@ -579,7 +594,7 @@ class ColorDependentBias(BiasModel):
 
     def apply(self, ra, dec, obstime, mag=None, zenith_angle=None,
               parallactic_angle=None, object_rate=None, field_ra=None,
-              field_dec=None) -> _BiasResult:
+              field_dec=None, velocity_ra_unit=None, velocity_dec_unit=None) -> _BiasResult:
         if mag is None:
             logger.warning(
                 "ColorDependentBias requires mag as color proxy; returning zero."
@@ -629,7 +644,7 @@ class SeasonalBias(BiasModel):
 
     def apply(self, ra, dec, obstime, mag=None, zenith_angle=None,
               parallactic_angle=None, object_rate=None, field_ra=None,
-              field_dec=None) -> _BiasResult:
+              field_dec=None, velocity_ra_unit=None, velocity_dec_unit=None) -> _BiasResult:
         phase = 2 * np.pi * (obstime - self.phase_days) / self._PERIOD
         return self.amplitude_ra * np.sin(phase), self.amplitude_dec * np.sin(phase)
 
@@ -660,7 +675,7 @@ class StepChangeBias(BiasModel):
 
     def apply(self, ra, dec, obstime, mag=None, zenith_angle=None,
               parallactic_angle=None, object_rate=None, field_ra=None,
-              field_dec=None) -> _BiasResult:
+              field_dec=None, velocity_ra_unit=None, velocity_dec_unit=None) -> _BiasResult:
         before = obstime < self.change_mjd
         d_ra = np.where(before, self.delta_ra_before, self.delta_ra_after)
         d_dec = np.where(before, self.delta_dec_before, self.delta_dec_after)
@@ -702,7 +717,7 @@ class NightlyDrift(BiasModel):
 
     def apply(self, ra, dec, obstime, mag=None, zenith_angle=None,
               parallactic_angle=None, object_rate=None, field_ra=None,
-              field_dec=None) -> _BiasResult:
+              field_dec=None, velocity_ra_unit=None, velocity_dec_unit=None) -> _BiasResult:
         # Hours since midnight UTC (MJD fractional day × 24)
         hours_utc = (obstime % 1.0) * 24.0
         # Astronomical night is roughly 19–07 UTC; centre at 01:00 UTC.
@@ -745,7 +760,7 @@ class ReportingTruncation(BiasModel):
 
     def apply(self, ra, dec, obstime, mag=None, zenith_angle=None,
               parallactic_angle=None, object_rate=None, field_ra=None,
-              field_dec=None) -> _BiasResult:
+              field_dec=None, velocity_ra_unit=None, velocity_dec_unit=None) -> _BiasResult:
         prec_deg = self.precision_arcsec / 3600.0
         ra_rounded = np.round(ra / prec_deg) * prec_deg
         dec_rounded = np.round(dec / prec_deg) * prec_deg
@@ -787,7 +802,7 @@ class WrongSiteBias(BiasModel):
 
     def apply(self, ra, dec, obstime, mag=None, zenith_angle=None,
               parallactic_angle=None, object_rate=None, field_ra=None,
-              field_dec=None) -> _BiasResult:
+              field_dec=None, velocity_ra_unit=None, velocity_dec_unit=None) -> _BiasResult:
         dist_m = self.nominal_distance_au * self._AU_M
         # Parallax shift in radians ≈ baseline_m / distance_m
         # East error → RA shift; North error → Dec shift (approximate)

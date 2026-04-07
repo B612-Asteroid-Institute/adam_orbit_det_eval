@@ -344,6 +344,50 @@ def main():
 
     combined = pd.concat(all_rows, ignore_index=True)
 
+    # ------------------------------------------------------------------
+    # Baseline correction: for each (target_station, stn) pair, subtract
+    # the clean scenario's mean_at/mean_ct to remove the LOOO floor.
+    # The LOOO AT floor is a large systematic (~0.1–0.6 arcsec) driven by
+    # orbit-fit correlations that is present even with no injected bias.
+    # Corrected SNR = (bias_mean_at - clean_mean_at) / sqrt(bias_sem^2 + clean_sem^2)
+    # ------------------------------------------------------------------
+    clean_rows = combined[combined["applied_bias"] == "clean"].copy()
+    clean_lookup = clean_rows.set_index(["target_station", "stn"])[
+        ["mean_at_arcsec", "sem_at_arcsec", "mean_ct_arcsec", "sem_ct_arcsec"]
+    ].rename(columns={
+        "mean_at_arcsec": "_cl_mean_at",
+        "sem_at_arcsec":  "_cl_sem_at",
+        "mean_ct_arcsec": "_cl_mean_ct",
+        "sem_ct_arcsec":  "_cl_sem_ct",
+    })
+
+    combined = combined.join(clean_lookup, on=["target_station", "stn"])
+
+    def _corr_snr(mean_bias, mean_clean, sem_bias, sem_clean):
+        diff = mean_bias - mean_clean
+        sem_diff = np.sqrt(sem_bias**2 + sem_clean**2)
+        return diff / sem_diff if sem_diff > 0 else 0.0
+
+    combined["corrected_snr_at"] = combined.apply(
+        lambda r: _corr_snr(r["mean_at_arcsec"], r.get("_cl_mean_at", r["mean_at_arcsec"]),
+                            r["sem_at_arcsec"],  r.get("_cl_sem_at",  0.0)),
+        axis=1,
+    )
+    combined["corrected_snr_ct"] = combined.apply(
+        lambda r: _corr_snr(r["mean_ct_arcsec"], r.get("_cl_mean_ct", r["mean_ct_arcsec"]),
+                            r["sem_ct_arcsec"],  r.get("_cl_sem_ct",  0.0)),
+        axis=1,
+    )
+    # Clean scenario correction is 0 by construction
+    combined.loc[combined["applied_bias"] == "clean", "corrected_snr_at"] = 0.0
+    combined.loc[combined["applied_bias"] == "clean", "corrected_snr_ct"] = 0.0
+
+    combined["corrected_detected_at"] = combined["corrected_snr_at"].abs() >= args.threshold
+    combined["corrected_detected_ct"] = combined["corrected_snr_ct"].abs() >= args.threshold
+
+    # Drop the helper columns before writing
+    combined = combined.drop(columns=[c for c in combined.columns if c.startswith("_cl_")])
+
     out_csv = args.study_dir / "atct_combined_recovery.csv"
     combined.to_csv(out_csv, index=False)
     logger.info(f"\nWrote {len(combined)} rows → {out_csv}")
@@ -389,6 +433,23 @@ def print_summary(df: pd.DataFrame, threshold_snr: float):
               f"{r['snr_dec']:8.2f}  {r['snr_ct']:7.2f}  {d_snr_ct:>+7.2f}{gain_ct}  "
               f"{det_ra:>6}  {det_at:>6}  {det_dec:>7}  {det_ct:>6}  "
               f"{speed:7.1f}")
+
+    print()
+    # Show corrected AT/CT detection rates
+    print()
+    print("  CORRECTED AT DETECTION (baseline-subtracted, simulation only):")
+    print(f"  {'Bias':<14} {'Corr Det AT':>11}  {'Corr Det CT':>11}  {'med corr SNR_AT':>16}  {'med corr SNR_CT':>16}")
+    print("  " + "-" * 72)
+    for bias in bias_order:
+        sub = target[target["applied_bias"] == bias]
+        if sub.empty:
+            continue
+        n = len(sub)
+        n_cat = int(sub["corrected_detected_at"].sum()) if "corrected_detected_at" in sub.columns else 0
+        n_cct = int(sub["corrected_detected_ct"].sum()) if "corrected_detected_ct" in sub.columns else 0
+        med_at = sub["corrected_snr_at"].median() if "corrected_snr_at" in sub.columns else float("nan")
+        med_ct = sub["corrected_snr_ct"].median() if "corrected_snr_ct" in sub.columns else float("nan")
+        print(f"  {bias:<14} {n_cat}/{n} ({100*n_cat/n:.0f}%)     {n_cct}/{n} ({100*n_cct/n:.0f}%)     {med_at:>+14.2f}  {med_ct:>+14.2f}")
 
     print()
     print("  SUMMARY — cases where AT/CT changes detection outcome:")

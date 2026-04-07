@@ -82,7 +82,7 @@ class _ZeroBias(BiasModel):
 
     def apply(self, ra, dec, obstime, mag=None, zenith_angle=None,
               parallactic_angle=None, object_rate=None, field_ra=None,
-              field_dec=None):
+              field_dec=None, velocity_ra_unit=None, velocity_dec_unit=None):
         import numpy as np
         return np.zeros_like(ra), np.zeros_like(dec)
 

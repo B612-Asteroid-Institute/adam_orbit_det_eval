@@ -1,0 +1,21 @@
+# Exclude large local data and logs from Cloud Build context.
+# Only source code and configs are needed — input data is fetched from GCS at runtime.
+.gcloudignore
+.git
+.gitignore
+
+data/
+logs/
+reports/
+*.html
+
+# Python artifacts
+__pycache__/
+*.py[codz]
+*$py.class
+*.so
+.venv/
+.eggs/
+*.egg-info/
+dist/
+build/

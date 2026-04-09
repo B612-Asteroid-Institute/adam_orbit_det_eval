@@ -41,7 +41,8 @@ from adam_core.orbit_determination.evaluate import (
     OrbitDeterminationObservations,
     evaluate_orbits,
 )
-from adam_core.orbit_determination.fitted_orbits import FittedOrbits
+from adam_core.orbit_determination.fitted_orbits import FittedOrbitMembers, FittedOrbits
+from adam_core.orbit_determination.orbit_fitter import OrbitFitter
 from adam_core.orbits.orbits import Orbits
 from adam_core.propagator.propagator import Propagator
 
@@ -126,6 +127,25 @@ class LOOOResult(qv.Table):
     hold_in_fit_success = qv.BooleanColumn(nullable=True)
 
 
+def _orbits_as_fitted(orbit: Orbits) -> FittedOrbits:
+    """
+    Wrap an ``Orbits`` (e.g. an MPC reference orbit) as a ``FittedOrbits`` so
+    it can be passed to ``OrbitFitter.refine_fit``.
+
+    Quality fields (chi2, arc_length, etc.) are left as NaN / null because they
+    have not been determined for the reference orbit.
+    """
+    return FittedOrbits.from_kwargs(
+        orbit_id=[orbit.orbit_id[0].as_py()],
+        object_id=[orbit.object_id[0].as_py() if orbit.object_id[0].is_valid else None],
+        coordinates=orbit.coordinates,
+        arc_length=[float("nan")],
+        num_obs=[0],
+        chi2=[float("nan")],
+        reduced_chi2=[float("nan")],
+    )
+
+
 def _arc_length_days(observations: OrbitDeterminationObservations) -> float:
     """Return the time span (days) of the observation set."""
     mjds = observations.coordinates.time.mjd().to_numpy(zero_copy_only=False)
@@ -159,6 +179,7 @@ def run_looo_for_object(
     propagator: Propagator,
     config: Optional[LOOOConfig] = None,
     astcats: Optional[List[Optional[str]]] = None,
+    orbit_fitter: Optional[OrbitFitter] = None,
 ) -> LOOOResult:
     """
     Run leave-one-observatory-out cross-validation for a single object.
@@ -183,6 +204,15 @@ def run_looo_for_object(
     astcats : list of str or None, optional
         Astrometric catalog codes parallel to observations.id. If provided,
         these are stored in the output for per-catalog analysis.
+    orbit_fitter : OrbitFitter, optional
+        OD backend used for the differential-correction step.  Must implement
+        the ``adam_core.orbit_determination.OrbitFitter`` ABC.  If ``None``
+        (default), falls back to ``adam_core``'s built-in ``fit_least_squares``.
+
+        Any ``OrbitFitter`` compatible with ``adam_core`` can be used here —
+        e.g. ``NativeOrbitFitter``, ``adam_fo.FindOrbFitter``, etc.  The fitter
+        must be picklable (i.e. implement ``__getstate__`` / ``__setstate__``)
+        because it is passed to subprocess workers in the parallel pipeline.
 
     Returns
     -------
@@ -236,12 +266,19 @@ def run_looo_for_object(
 
         # --- Differential correction on hold-in observations ---
         try:
-            hold_in_orbit, hold_in_members = fit_least_squares(
-                reference_orbit,
-                hold_in_obs,
-                propagator,
-                **config.ls_kwargs,
-            )
+            if orbit_fitter is not None:
+                hold_in_orbit, hold_in_members = orbit_fitter.refine_fit(
+                    _orbits_as_fitted(reference_orbit),
+                    hold_in_obs,
+                    propagator,
+                )
+            else:
+                hold_in_orbit, hold_in_members = fit_least_squares(
+                    reference_orbit,
+                    hold_in_obs,
+                    propagator,
+                    **config.ls_kwargs,
+                )
         except Exception as e:
             logger.warning(f"{object_id} / {stn}: DC failed: {e}")
             continue

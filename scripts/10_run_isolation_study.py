@@ -32,16 +32,18 @@ Usage
     # Run only a specific bias across all stations:
     python scripts/10_run_isolation_study.py --input-dir data/sim_sample --bias constant
 
+    # Run scenarios in parallel (--scenario-parallelism N × --max-processes M = total cores):
+    python scripts/10_run_isolation_study.py --input-dir data/looo_sample_3500 \\
+        --scenario-parallelism 16 --max-processes 6
+
     # Dry-run: print scenario names without executing:
     python scripts/10_run_isolation_study.py --dry-run
 """
 
 import argparse
-import io
-import contextlib
-import json
 import logging
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 logging.basicConfig(
@@ -50,277 +52,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+from adam_orbit_det_eval.isolation_study import (
+    BIAS_NAMES,
+    list_scenarios,
+    run_scenario,
+    scenario_id,
+)
 
-# ---------------------------------------------------------------------------
-# Bias catalogue — canonical parameters used across all stations
-# ---------------------------------------------------------------------------
-
-STEP_MJD = 59945.0  # 2023-01-01
-
-
-def _get_bias_catalogue():
-    """Build the bias catalogue dict (deferred import so module loads fast)."""
-    import adam_orbit_det_eval.simulation.bias_models as bm
-    return {
-        "clean":    [],
-        "constant": [bm.ConstantBias(delta_ra=0.5, delta_dec=0.0)],
-        "timing":   [bm.TimingBias(delta_t_sec=1.0)],
-        "mag_dep":  [bm.MagnitudeDependentBias(slope_ra=0.05, slope_dec=0.02)],
-        "epoch":    [bm.CatalogEpochBias(epoch_error_years=5.0)],
-        "seasonal": [bm.SeasonalBias(amplitude_ra=0.3, amplitude_dec=0.1)],
-        "step":     [bm.StepChangeBias(
-            delta_ra_before=0.0, delta_dec_before=0.0,
-            delta_ra_after=0.4, delta_dec_after=-0.2,
-            change_mjd=STEP_MJD,
-        )],
-        "dcr":      [bm.DCRBias(bandpass_nm=200.0, ref_wavelength_nm=550.0)],
-        "trailing": [bm.TrailingBias(trailing_factor=0.1)],
-    }
-
-
-BIAS_NAMES = ["clean", "constant", "timing", "mag_dep", "epoch",
-              "seasonal", "step", "dcr", "trailing"]
-
-
-# ---------------------------------------------------------------------------
-# Phase 1 station definitions
-# ---------------------------------------------------------------------------
-
-PHASE1_STATIONS = [
-    dict(fake_code="AA00", real_code="F51",  noise_ra=0.15, noise_dec=0.15, astcat="Gaia3E"),
-    dict(fake_code="AA01", real_code="G96",  noise_ra=0.15, noise_dec=0.15, astcat="Gaia3E"),
-    dict(fake_code="AA02", real_code="F52",  noise_ra=0.15, noise_dec=0.15, astcat="Gaia3E"),
-    dict(fake_code="AA03", real_code="703",  noise_ra=0.35, noise_dec=0.35, astcat="Gaia2"),
-    dict(fake_code="AA04", real_code="691",  noise_ra=0.35, noise_dec=0.35, astcat="UCAC4"),
-    dict(fake_code="AA05", real_code="W84",  noise_ra=0.20, noise_dec=0.20, astcat="Gaia3E"),
-    dict(fake_code="AA06", real_code="W68",  noise_ra=0.25, noise_dec=0.25, astcat="Gaia3E"),
-    dict(fake_code="AA07", real_code="T09",  noise_ra=0.25, noise_dec=0.25, astcat="Gaia3E"),
-    dict(fake_code="AA08", real_code="V00",  noise_ra=0.35, noise_dec=0.35, astcat="Gaia2"),
-]
-
-
-def build_isolation_map(target_fake_code: str, bias_name: str):
-    """
-    Return an ObservatoryMap where *target_fake_code* has *bias_name* applied
-    and all other stations are clean (noise only, no systematic bias).
-    """
-    from adam_orbit_det_eval.simulation import FakeObservatory, ObservatoryMap
-
-    catalogue = _get_bias_catalogue()
-    assignments = []
-    for stn in PHASE1_STATIONS:
-        if stn["fake_code"] == target_fake_code and bias_name != "clean":
-            biases = catalogue[bias_name]
-        else:
-            biases = []
-
-        assignments.append(
-            FakeObservatory(
-                fake_code=stn["fake_code"],
-                real_code=stn["real_code"],
-                noise_sigma_ra=stn["noise_ra"],
-                noise_sigma_dec=stn["noise_dec"],
-                biases=biases,
-                astcat=stn["astcat"],
-            )
-        )
-    return ObservatoryMap(assignments)
-
-
-def scenario_id(fake_code: str, bias_name: str) -> str:
-    return f"{fake_code}_{bias_name}"
-
-
-def list_scenarios(
-    stations: list | None,
-    biases: list | None,
-) -> list[tuple[str, str]]:
-    all_fake = [s["fake_code"] for s in PHASE1_STATIONS]
-    target_stations = stations if stations else all_fake
-    target_biases = biases if biases else BIAS_NAMES
-    return [
-        (fc, bn)
-        for fc in all_fake
-        for bn in BIAS_NAMES
-        if fc in target_stations and bn in target_biases
-    ]
-
-
-# ---------------------------------------------------------------------------
-# Per-scenario pipeline
-# ---------------------------------------------------------------------------
-
-def run_scenario(
-    fake_code: str,
-    bias_name: str,
-    obs_template,
-    truth_orbits,
-    object_ids: list,
-    propagator_class,
-    output_base: Path,
-    cache_dir: Path,
-    max_processes: int,
-    threshold_arcsec: float,
-    force: bool,
-) -> list | None:
-    """
-    Run full pipeline for one isolation scenario.
-
-    Returns a list of recovery row dicts (one per station), tagged with
-    scenario/target metadata, or None on failure.
-    """
-    from adam_orbit_det_eval.simulation import SimulationConfig, SimulationDataset
-    from adam_orbit_det_eval.looo.core import LOOOConfig
-
-    sname = scenario_id(fake_code, bias_name)
-    scenario_dir = output_base / sname
-    dataset_dir = scenario_dir / "datasets" / "default"
-    looo_dir = scenario_dir / "looo_results" / "default"
-    analysis_dir = scenario_dir / "analysis" / "default"
-    recovery_dir = scenario_dir / "recovery" / "default"
-
-    obs_out = dataset_dir / "mpc_observations.parquet"
-    looo_out = looo_dir / "looo_results.parquet"
-    obs_stats_path = analysis_dir / "observatory_stats.parquet"
-
-    # --- Dataset generation ---
-    if obs_out.exists() and not force:
-        logger.info(f"  [{sname}] Dataset exists, skipping generation.")
-    else:
-        obs_map = build_isolation_map(fake_code, bias_name)
-        config = SimulationConfig(
-            run_id=sname,
-            objects=object_ids,
-            observatory_map=obs_map,
-            propagator_class=propagator_class,
-            noise_seed=42,
-            looo_config=LOOOConfig(),
-        )
-        SimulationDataset(config).generate(
-            obs_template=obs_template,
-            truth_orbits=truth_orbits,
-            output_dir=dataset_dir,
-            cache_dir=cache_dir,
-            force=force,
-        )
-
-    # --- LOOO pipeline ---
-    if looo_out.exists() and not force:
-        logger.info(f"  [{sname}] LOOO results exist, skipping pipeline.")
-    else:
-        looo_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            _run_looo(
-                dataset_dir=dataset_dir,
-                looo_out=looo_out,
-                propagator_class=propagator_class,
-                max_processes=max_processes,
-                force=force,
-            )
-        except Exception as exc:
-            logger.error(f"  [{sname}] LOOO failed: {exc}", exc_info=True)
-            return None
-
-    # --- Analysis step ---
-    if obs_stats_path.exists() and not force:
-        logger.info(f"  [{sname}] Analysis exists, skipping.")
-    else:
-        analysis_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            _run_analysis(looo_out=looo_out, analysis_dir=analysis_dir)
-        except Exception as exc:
-            logger.error(f"  [{sname}] Analysis failed: {exc}", exc_info=True)
-            return None
-
-    # --- Recovery evaluation ---
-    truth_csv = dataset_dir / "truth_biases.csv"
-    if not obs_stats_path.exists() or not truth_csv.exists():
-        logger.warning(f"  [{sname}] Missing inputs for evaluation, skipping.")
-        return None
-
-    try:
-        from adam_orbit_det_eval.simulation import evaluate_recovery, print_recovery_summary
-        recovery_df = evaluate_recovery(
-            observatory_stats_parquet=obs_stats_path,
-            truth_biases_csv=truth_csv,
-            threshold_arcsec=threshold_arcsec,
-        )
-        recovery_df["scenario"] = sname
-        recovery_df["target_station"] = fake_code
-        recovery_df["applied_bias"] = bias_name
-        recovery_df["is_target"] = recovery_df["fake_code"] == fake_code
-
-        recovery_dir.mkdir(parents=True, exist_ok=True)
-        recovery_df.to_csv(recovery_dir / "recovery_report.csv", index=False)
-
-        summary_txt = recovery_dir / "recovery_summary.txt"
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            print_recovery_summary(recovery_df)
-        summary_txt.write_text(buf.getvalue())
-
-        return recovery_df.to_dict("records")
-
-    except Exception as exc:
-        logger.error(f"  [{sname}] Evaluation failed: {exc}", exc_info=True)
-        return None
-
-
-def _run_looo(dataset_dir, looo_out, propagator_class, max_processes, force=False):
-    import shutil
-    from mpcq.observations import MPCObservations
-    from mpcq.orbits import MPCOrbits
-    from adam_orbit_det_eval.looo import run_looo_pipeline
-    from adam_orbit_det_eval.looo.core import LOOOConfig
-
-    # Clean up stale input snapshots and checkpoints so run_looo_pipeline always
-    # writes fresh copies consistent with the current dataset and propagator.
-    if force:
-        looo_dir = looo_out.parent
-        for stale in ["_obs_input.parquet", "_orbits_input.parquet"]:
-            p = looo_dir / stale
-            if p.exists():
-                p.unlink()
-                logger.info(f"    Removed stale {stale}")
-        ckpt_dir = looo_dir / "checkpoints"
-        if ckpt_dir.exists():
-            shutil.rmtree(ckpt_dir)
-            logger.info("    Removed stale checkpoints/")
-
-    obs = MPCObservations.from_parquet(dataset_dir / "mpc_observations.parquet")
-    orbits = MPCOrbits.from_parquet(dataset_dir / "mpc_orbits.parquet")
-    config = LOOOConfig(
-        min_obs_held_out=1,
-        min_obs_remaining=6,
-        min_arc_length_days=7.0,
-        max_held_out_fraction=0.8,
-    )
-    run_looo_pipeline(
-        mpc_observations=obs,
-        mpc_orbits=orbits,
-        propagator_class=propagator_class,
-        output_path=looo_out,
-        config=config,
-        object_ids=None,
-        max_processes=max_processes,
-        write_interval=50,
-        sigma_model="veres2017",
-    )
-
-
-def _run_analysis(looo_out, analysis_dir):
-    import pyarrow.parquet as pq
-    from adam_orbit_det_eval.looo.core import LOOOResult
-    from adam_orbit_det_eval.looo.analysis import compute_observatory_stats
-
-    results = LOOOResult(pq.read_table(looo_out))
-    obs_stats = compute_observatory_stats(results, min_obs_per_stn=5)
-    obs_stats.to_parquet(analysis_dir / "observatory_stats.parquet")
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
@@ -338,6 +76,14 @@ def parse_args():
         "--propagator", choices=["twobody", "assist"], default="twobody",
     )
     p.add_argument("--max-processes", type=int, default=6)
+    p.add_argument(
+        "--scenario-parallelism", type=int, default=1,
+        help=(
+            "Number of scenarios to run concurrently (default: 1 = sequential). "
+            "Total worker count = scenario_parallelism × max_processes. "
+            "On a 96-core VM, try --scenario-parallelism 16 --max-processes 6."
+        ),
+    )
     p.add_argument("--threshold", type=float, default=0.1,
                    help="Recovery threshold arcsec (default: 0.1)")
     p.add_argument(
@@ -372,7 +118,7 @@ def main():
     logger.info(f"Running {len(scenarios)} isolation scenarios.")
 
     # Load input data once
-    obs_path = args.input_dir / "mpc_observations.parquet"
+    obs_path    = args.input_dir / "mpc_observations.parquet"
     orbits_path = args.input_dir / "mpc_orbits.parquet"
     for p, label in [(obs_path, "observations"), (orbits_path, "orbits")]:
         if not p.exists():
@@ -400,33 +146,54 @@ def main():
     cache_dir.mkdir(parents=True, exist_ok=True)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    all_rows = []
-    failed = []
+    # Shared kwargs for every run_scenario call
+    scenario_kwargs = dict(
+        obs_template=obs_template,
+        truth_orbits=truth_orbits,
+        object_ids=object_ids,
+        propagator_class=propagator_class,
+        output_base=args.output_dir,
+        cache_dir=cache_dir,
+        max_processes=args.max_processes,
+        threshold_arcsec=args.threshold,
+        force=args.force,
+    )
 
-    for i, (fake_code, bias_name) in enumerate(scenarios):
-        sname = scenario_id(fake_code, bias_name)
-        logger.info(f"[{i+1}/{len(scenarios)}] {sname}")
-        try:
-            rows = run_scenario(
-                fake_code=fake_code,
-                bias_name=bias_name,
-                obs_template=obs_template,
-                truth_orbits=truth_orbits,
-                object_ids=object_ids,
-                propagator_class=propagator_class,
-                output_base=args.output_dir,
-                cache_dir=cache_dir,
-                max_processes=args.max_processes,
-                threshold_arcsec=args.threshold,
-                force=args.force,
-            )
-            if rows:
-                all_rows.extend(rows)
-            else:
+    all_rows: list = []
+    failed:   list = []
+
+    if args.scenario_parallelism <= 1:
+        # Sequential (original behaviour)
+        for i, (fc, bn) in enumerate(scenarios):
+            sname = scenario_id(fc, bn)
+            logger.info(f"[{i+1}/{len(scenarios)}] {sname}")
+            try:
+                rows = run_scenario(fc, bn, **scenario_kwargs)
+                (all_rows.extend(rows) if rows else failed.append(sname))
+            except Exception as exc:
+                logger.error(f"Scenario {sname} failed: {exc}", exc_info=True)
                 failed.append(sname)
-        except Exception as exc:
-            logger.error(f"Scenario {sname} failed: {exc}", exc_info=True)
-            failed.append(sname)
+    else:
+        # Parallel scenarios — ThreadPoolExecutor so that the CPU work stays in
+        # the inner ProcessPoolExecutors spawned by run_scenario → _run_looo.
+        logger.info(
+            f"Running {len(scenarios)} scenarios with scenario_parallelism="
+            f"{args.scenario_parallelism} "
+            f"(total workers ≈ {args.scenario_parallelism * args.max_processes})"
+        )
+        with ThreadPoolExecutor(max_workers=args.scenario_parallelism) as pool:
+            future_to_sname = {
+                pool.submit(run_scenario, fc, bn, **scenario_kwargs): scenario_id(fc, bn)
+                for fc, bn in scenarios
+            }
+            for future in as_completed(future_to_sname):
+                sname = future_to_sname[future]
+                try:
+                    rows = future.result()
+                    (all_rows.extend(rows) if rows else failed.append(sname))
+                except Exception as exc:
+                    logger.error(f"Scenario {sname} failed: {exc}", exc_info=True)
+                    failed.append(sname)
 
     # Write combined CSV
     if all_rows:
@@ -445,7 +212,6 @@ def main():
 def _print_summary(df):
     """Print a compact station × bias detection matrix."""
     import numpy as np
-    import pandas as pd
 
     target = df[df["is_target"]].copy()
     if target.empty:
@@ -464,7 +230,6 @@ def _print_summary(df):
     for _, row in target.sort_values(["target_station", "applied_bias"]).iterrows():
         def _f(v):
             return f"{v:+7.3f}" if isinstance(v, float) and np.isfinite(v) else "   N/A "
-
         print(
             f"{row['scenario']:<22}  "
             f"{row['applied_bias']:<20}  "
@@ -477,7 +242,6 @@ def _print_summary(df):
             f"{'Y' if row['detected_dec'] else 'N':>6}"
         )
 
-    # Detection rate by bias type
     print()
     print("Detection rate (RA) by bias type at target station:")
     for bn in BIAS_NAMES:

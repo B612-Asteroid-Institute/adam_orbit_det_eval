@@ -67,7 +67,7 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     header = (
         f"{'Test':<{col_test}}  "
         f"{'Param':<{col_metric}}  "
-        f"{'Actual':>{num_w}}  "
+        f"{'Fitted':>{num_w}}  "
         f"{'MPC':>{num_w}}  "
         f"{'Delta':>{num_w}}  "
         f"{'Percent delta':>{num_w}}"

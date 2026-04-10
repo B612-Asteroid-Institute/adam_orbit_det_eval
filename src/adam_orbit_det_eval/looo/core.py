@@ -45,6 +45,12 @@ from adam_core.orbit_determination.fitted_orbits import FittedOrbits
 from adam_core.orbits.orbits import Orbits
 from adam_core.propagator.propagator import Propagator
 
+from .eligibility import (
+    ExclusionStats,
+    check_pair_eligibility,
+    is_comet,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -159,13 +165,15 @@ def run_looo_for_object(
     propagator: Propagator,
     config: Optional[LOOOConfig] = None,
     astcats: Optional[List[Optional[str]]] = None,
+    holdout_column: Optional[np.ndarray] = None,
+    exclusion_stats: Optional[ExclusionStats] = None,
 ) -> LOOOResult:
     """
     Run leave-one-observatory-out cross-validation for a single object.
 
-    For each observatory that contributed observations, holds out those
-    observations, refits the orbit, predicts at the held-out times, and
-    returns the residuals.
+    For each holdout key (observatory or program code) that contributed
+    observations, holds out those observations, refits the orbit, predicts
+    at the held-out times, and returns the residuals.
 
     Parameters
     ----------
@@ -183,6 +191,11 @@ def run_looo_for_object(
     astcats : list of str or None, optional
         Astrometric catalog codes parallel to observations.id. If provided,
         these are stored in the output for per-catalog analysis.
+    holdout_column : np.ndarray, optional
+        Array of holdout key values parallel to observations (e.g. program codes).
+        Defaults to observatory codes (observations.coordinates.origin.code).
+    exclusion_stats : ExclusionStats, optional
+        If provided, records exclusion statistics for each pair checked.
 
     Returns
     -------
@@ -193,46 +206,51 @@ def run_looo_for_object(
     if config is None:
         config = LOOOConfig()
 
+    # Comet exclusion
+    if is_comet(object_id):
+        logger.debug(f"{object_id}: comet excluded")
+        return LOOOResult.empty()
+
     n_obs_total = len(observations)
     all_stns = observations.coordinates.origin.code.to_numpy(zero_copy_only=False)
     all_obs_ids = observations.id.to_numpy(zero_copy_only=False)
     all_mjds = observations.coordinates.time.mjd().to_numpy(zero_copy_only=False)
-    unique_stns = np.unique(all_stns)
+
+    # Determine holdout keys — default to observatory codes
+    if holdout_column is not None:
+        holdout_keys = holdout_column
+    else:
+        holdout_keys = all_stns
+    unique_keys = np.unique(holdout_keys)
 
     results: List[LOOOResult] = []
 
-    for stn in unique_stns:
-        held_out_mask = all_stns == stn
+    for key in unique_keys:
+        held_out_mask = holdout_keys == key
         hold_in_mask = ~held_out_mask
 
-        n_held_out = int(held_out_mask.sum())
-        n_remaining = int(hold_in_mask.sum())
-        held_out_fraction = n_held_out / n_obs_total
+        # --- Eligibility checks via eligibility module ---
+        eligibility = check_pair_eligibility(
+            observations, held_out_mask, config,
+            object_id=object_id, holdout_key=str(key),
+        )
+        if exclusion_stats is not None:
+            exclusion_stats.record(eligibility)
+        if not eligibility.eligible:
+            logger.debug(f"{object_id} / {key}: {eligibility.reason}, skipping")
+            continue
 
-        # --- Eligibility checks ---
-        if n_held_out < config.min_obs_held_out:
-            logger.debug(f"{object_id} / {stn}: only {n_held_out} held-out obs, skipping")
-            continue
-        if n_remaining < config.min_obs_remaining:
-            logger.debug(
-                f"{object_id} / {stn}: only {n_remaining} remaining obs, skipping"
-            )
-            continue
-        if held_out_fraction > config.max_held_out_fraction:
-            logger.debug(
-                f"{object_id} / {stn}: held-out fraction {held_out_fraction:.2f} > "
-                f"{config.max_held_out_fraction}, skipping"
-            )
-            continue
+        n_held_out = eligibility.stats["n_held_out"]
+        n_remaining = eligibility.stats["n_remaining"]
+        held_out_fraction = eligibility.stats["held_out_fraction"]
+        arc_remaining = eligibility.stats["arc_remaining"]
 
         hold_in_obs = observations.apply_mask(pa.array(hold_in_mask))
-        arc_remaining = _arc_length_days(hold_in_obs)
-        if arc_remaining < config.min_arc_length_days:
-            logger.debug(
-                f"{object_id} / {stn}: arc length {arc_remaining:.1f}d < "
-                f"{config.min_arc_length_days}d, skipping"
-            )
-            continue
+
+        # Resolve the station code for the result — when holding out by
+        # observatory the key IS the station; when holding out by program
+        # code we still record the actual station per observation below.
+        stn_for_key = str(key) if holdout_column is None else None
 
         # --- Differential correction on hold-in observations ---
         try:
@@ -243,11 +261,11 @@ def run_looo_for_object(
                 **config.ls_kwargs,
             )
         except Exception as e:
-            logger.warning(f"{object_id} / {stn}: DC failed: {e}")
+            logger.warning(f"{object_id} / {key}: DC failed: {e}")
             continue
 
         if len(hold_in_orbit) == 0:
-            logger.debug(f"{object_id} / {stn}: DC returned no orbit, skipping")
+            logger.debug(f"{object_id} / {key}: DC returned no orbit, skipping")
             continue
 
         # --- Predict at held-out observation times ---
@@ -260,26 +278,20 @@ def run_looo_for_object(
                 parameters=6,
             )
         except Exception as e:
-            logger.warning(f"{object_id} / {stn}: evaluate_orbits failed: {e}")
+            logger.warning(f"{object_id} / {key}: evaluate_orbits failed: {e}")
             continue
 
         # --- Collect residuals ---
-        # residuals.values is a list of 6-element arrays [rho, ra, dec, vrho, vra, vdec]
-        # indices 1 and 2 are RA and Dec residuals (in degrees)
         residual_array = held_out_members.residuals.to_array()  # (N, 6)
-        # Convert degrees → arcseconds
-        res_ra_arcsec = residual_array[:, 1] * 3600.0  # RA residual (already cos-dec corrected by Residuals)
+        res_ra_arcsec = residual_array[:, 1] * 3600.0
         res_dec_arcsec = residual_array[:, 2] * 3600.0
 
         # --- Recover per-obs sigma from the held-out observations ---
         cov_matrix = held_out_obs.coordinates.covariance.to_matrix()  # (N, 6, 6)
-        # cov[:, 1, 1] = sigma_ra^2 (in degrees^2, without cos-dec factor)
-        # cov[:, 2, 2] = sigma_dec^2 (in degrees^2)
         sigma_ra_deg = np.sqrt(np.abs(cov_matrix[:, 1, 1]))
         sigma_dec_deg = np.sqrt(np.abs(cov_matrix[:, 2, 2]))
         dec_deg = held_out_obs.coordinates.lat.to_numpy(zero_copy_only=False)
         cos_dec = np.cos(np.deg2rad(dec_deg))
-        # Back-convert to sigma(RA*cos(dec)) in arcsec for display
         sigma_ra_cosdec_arcsec = sigma_ra_deg * cos_dec * 3600.0
         sigma_dec_arcsec = sigma_dec_deg * 3600.0
 
@@ -294,12 +306,18 @@ def run_looo_for_object(
         else:
             held_out_astcats = [None] * n_held_out
 
+        # --- Station codes: per-obs actual station when holding out by non-stn key ---
+        if stn_for_key is not None:
+            stn_values = np.full(n_held_out, stn_for_key, dtype=object)
+        else:
+            stn_values = all_stns[held_out_mask]
+
         # --- Build result rows ---
         held_out_obs_ids = all_obs_ids[held_out_mask]
         result = LOOOResult.from_kwargs(
             object_id=np.full(n_held_out, object_id, dtype=object),
             obs_id=held_out_obs_ids,
-            stn=np.full(n_held_out, stn, dtype=object),
+            stn=stn_values,
             residual_ra_arcsec=res_ra_arcsec,
             residual_dec_arcsec=res_dec_arcsec,
             sigma_ra_cosdec_arcsec=np.where(np.isfinite(sigma_ra_cosdec_arcsec), sigma_ra_cosdec_arcsec, None),
@@ -327,7 +345,7 @@ def run_looo_for_object(
         )
         results.append(result)
         logger.info(
-            f"{object_id} / {stn}: {n_held_out} held-out obs, "
+            f"{object_id} / {key}: {n_held_out} held-out obs, "
             f"chi2/obs={float(np.nanmean(chi2_vals)):.2f}"
         )
 

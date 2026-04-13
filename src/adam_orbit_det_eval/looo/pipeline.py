@@ -30,6 +30,7 @@ import pyarrow.parquet as pq
 
 import quivr as qv
 
+from adam_core.orbit_determination.orbit_fitter import OrbitFitter
 from adam_core.propagator.propagator import Propagator
 
 from mpcq.observations import MPCObservations
@@ -106,6 +107,7 @@ def _worker(
     config: LOOOConfig,
     checkpoint_dir: str,
     sigma_model: str = "veres2017",
+    orbit_fitter: Optional[OrbitFitter] = None,
 ) -> Tuple[str, int]:
     """
     Worker function executed in a subprocess.
@@ -200,6 +202,7 @@ def _worker(
             propagator=propagator,
             config=config,
             astcats=astcats,
+            orbit_fitter=orbit_fitter,
         )
     except Exception as e:
         _log.error(f"{object_id}: run_looo_for_object failed: {e}", exc_info=True)
@@ -236,6 +239,7 @@ def run_looo_pipeline(
     propagator_kwargs: Optional[dict] = None,
     write_interval: int = 50,  # kept for API compatibility, no longer used
     sigma_model: str = "veres2017",
+    orbit_fitter: Optional[OrbitFitter] = None,
 ) -> LOOOResult:
     """
     Run LOOO cross-validation for all (or a subset of) objects, in parallel.
@@ -265,6 +269,10 @@ def run_looo_pipeline(
         Currently unused (workers instantiate propagators with no args).
     write_interval : int
         Ignored (kept for API compatibility).
+    orbit_fitter : OrbitFitter, optional
+        If provided, use this fitter's `initial_fit` for hold-in fits instead
+        of the scipy-based `fit_least_squares`. Must be picklable for
+        ProcessPoolExecutor.
 
     Returns
     -------
@@ -320,6 +328,7 @@ def run_looo_pipeline(
                 config,
                 str(checkpoint_dir),
                 sigma_model,
+                orbit_fitter,
             ): oid
             for oid in remaining
         }

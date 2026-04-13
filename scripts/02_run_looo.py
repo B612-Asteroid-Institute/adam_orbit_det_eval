@@ -115,6 +115,22 @@ def parse_args():
              "'const' fills with a small constant (original behaviour, inflates chi2).",
     )
     p.add_argument(
+        "--orbit-fitter",
+        choices=["scipy", "findorb", "native"],
+        default="findorb",
+        help="Orbit fitter used for the LOOO hold-in fit (default: findorb). "
+             "'scipy' uses adam_core's fit_least_squares; "
+             "'findorb' uses adam_fo.FindOrbOrbitFitter (requires Find_Orb binary); "
+             "'native' uses adam_core's NativeOrbitFitter if available.",
+    )
+    p.add_argument(
+        "--fo-result-dir",
+        type=str,
+        default=None,
+        help="Directory for FindOrb intermediate outputs (default: temp dir under output-dir). "
+             "Only used when --orbit-fitter=findorb.",
+    )
+    p.add_argument(
         "--object-ids",
         nargs="*",
         help="Restrict to these object IDs (default: all objects in input)",
@@ -126,6 +142,35 @@ def parse_args():
         help="Write results to disk every N objects (default: 50)",
     )
     return p.parse_args()
+
+
+def get_orbit_fitter(name: str, fo_result_dir: str):
+    """Build an OrbitFitter instance (or None for scipy DC fallback).
+
+    Falls back to scipy DC with a warning if the requested fitter isn't
+    available locally.
+    """
+    if name == "scipy":
+        return None
+    if name == "findorb":
+        try:
+            from adam_fo.find_orb_orbit_fitter import FindOrbOrbitFitter
+            return FindOrbOrbitFitter(fo_result_dir=fo_result_dir)
+        except ImportError as e:
+            logger.warning(
+                f"FindOrbOrbitFitter unavailable ({e}); falling back to scipy DC."
+            )
+            return None
+    if name == "native":
+        try:
+            from adam_core.orbit_determination.native_orbit_fitter import NativeOrbitFitter
+            return NativeOrbitFitter()
+        except ImportError as e:
+            logger.warning(
+                f"NativeOrbitFitter unavailable ({e}); falling back to scipy DC."
+            )
+            return None
+    raise ValueError(f"Unknown orbit fitter: {name}")
 
 
 def get_propagator_class(name: str):
@@ -198,11 +243,19 @@ def main():
     propagator_class = get_propagator_class(args.propagator)
     logger.info(f"Using propagator: {propagator_class.__name__}")
 
+    # --- Configure orbit fitter ---
+    fo_result_dir = args.fo_result_dir or str(output_dir / "findorb_work")
+    orbit_fitter = get_orbit_fitter(args.orbit_fitter, fo_result_dir)
+    fitter_name = type(orbit_fitter).__name__ if orbit_fitter is not None else "scipy_fit_least_squares"
+    logger.info(f"Using orbit fitter: {fitter_name}")
+
     # --- Write run configuration for reproducibility ---
     import json
     run_config = {
         "run_id": run_id,
         "propagator": args.propagator,
+        "orbit_fitter": args.orbit_fitter,
+        "orbit_fitter_class": fitter_name,
         "sigma_model": args.sigma_model,
         "min_obs_remaining": args.min_obs_remaining,
         "min_arc_length_days": args.min_arc_length,
@@ -232,6 +285,7 @@ def main():
         max_processes=args.max_processes,
         write_interval=args.write_interval,
         sigma_model=args.sigma_model,
+        orbit_fitter=orbit_fitter,
     )
 
     logger.info(

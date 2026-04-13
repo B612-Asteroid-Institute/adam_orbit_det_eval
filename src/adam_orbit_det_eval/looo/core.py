@@ -42,6 +42,7 @@ from adam_core.orbit_determination.evaluate import (
     evaluate_orbits,
 )
 from adam_core.orbit_determination.fitted_orbits import FittedOrbits
+from adam_core.orbit_determination.orbit_fitter import OrbitFitter
 from adam_core.orbits.orbits import Orbits
 from adam_core.propagator.propagator import Propagator
 
@@ -167,6 +168,7 @@ def run_looo_for_object(
     astcats: Optional[List[Optional[str]]] = None,
     holdout_column: Optional[np.ndarray] = None,
     exclusion_stats: Optional[ExclusionStats] = None,
+    orbit_fitter: Optional[OrbitFitter] = None,
 ) -> LOOOResult:
     """
     Run leave-one-observatory-out cross-validation for a single object.
@@ -196,6 +198,11 @@ def run_looo_for_object(
         Defaults to observatory codes (observations.coordinates.origin.code).
     exclusion_stats : ExclusionStats, optional
         If provided, records exclusion statistics for each pair checked.
+    orbit_fitter : OrbitFitter, optional
+        If provided, use this fitter's `initial_fit(object_id, observations)`
+        for the hold-in fit instead of the built-in scipy-based
+        `fit_least_squares`. Must implement the `OrbitFitter` ABC and be
+        picklable for ProcessPoolExecutor.
 
     Returns
     -------
@@ -252,16 +259,22 @@ def run_looo_for_object(
         # code we still record the actual station per observation below.
         stn_for_key = str(key) if holdout_column is None else None
 
-        # --- Differential correction on hold-in observations ---
+        # --- Hold-in fit: pluggable orbit fitter or scipy DC ---
         try:
-            hold_in_orbit, hold_in_members = fit_least_squares(
-                reference_orbit,
-                hold_in_obs,
-                propagator,
-                **config.ls_kwargs,
-            )
+            if orbit_fitter is not None:
+                hold_in_orbit, hold_in_members = orbit_fitter.initial_fit(
+                    object_id,
+                    hold_in_obs,
+                )
+            else:
+                hold_in_orbit, hold_in_members = fit_least_squares(
+                    reference_orbit,
+                    hold_in_obs,
+                    propagator,
+                    **config.ls_kwargs,
+                )
         except Exception as e:
-            logger.warning(f"{object_id} / {key}: DC failed: {e}")
+            logger.warning(f"{object_id} / {key}: hold-in fit failed: {e}")
             continue
 
         if len(hold_in_orbit) == 0:

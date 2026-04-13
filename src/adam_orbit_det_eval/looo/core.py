@@ -108,6 +108,9 @@ class LOOOResult(qv.Table):
     # --- Astrometric catalog used for this observation (from ADES astcat field) ---
     astcat = qv.LargeStringColumn(nullable=True)
 
+    # --- MPC program code for this observation (from `prog` field) ---
+    program_code = qv.LargeStringColumn(nullable=True)
+
     # --- Hold-out set context (for bias control / stratification) ---
     #: Number of observations held out from this object for this observatory
     n_obs_held_out = qv.Int64Column()
@@ -166,6 +169,7 @@ def run_looo_for_object(
     propagator: Propagator,
     config: Optional[LOOOConfig] = None,
     astcats: Optional[List[Optional[str]]] = None,
+    program_codes: Optional[List[Optional[str]]] = None,
     holdout_column: Optional[np.ndarray] = None,
     exclusion_stats: Optional[ExclusionStats] = None,
     orbit_fitter: Optional[OrbitFitter] = None,
@@ -193,6 +197,9 @@ def run_looo_for_object(
     astcats : list of str or None, optional
         Astrometric catalog codes parallel to observations.id. If provided,
         these are stored in the output for per-catalog analysis.
+    program_codes : list of str or None, optional
+        MPC program codes (from the `prog` field) parallel to observations.id.
+        If provided, stored per-row in the output for per-program-code analysis.
     holdout_column : np.ndarray, optional
         Array of holdout key values parallel to observations (e.g. program codes).
         Defaults to observatory codes (observations.coordinates.origin.code).
@@ -319,6 +326,12 @@ def run_looo_for_object(
         else:
             held_out_astcats = [None] * n_held_out
 
+        # --- program_code values for held-out obs (if provided) ---
+        if program_codes is not None:
+            held_out_programs = [program_codes[i] for i, m in enumerate(held_out_mask) if m]
+        else:
+            held_out_programs = [None] * n_held_out
+
         # --- Station codes: per-obs actual station when holding out by non-stn key ---
         if stn_for_key is not None:
             stn_values = np.full(n_held_out, stn_for_key, dtype=object)
@@ -337,6 +350,7 @@ def run_looo_for_object(
             sigma_dec_arcsec=np.where(np.isfinite(sigma_dec_arcsec), sigma_dec_arcsec, None),
             chi2=np.where(np.isfinite(chi2_vals), chi2_vals, None),
             astcat=pa.array(held_out_astcats, type=pa.large_utf8()),
+            program_code=pa.array(held_out_programs, type=pa.large_utf8()),
             n_obs_held_out=np.full(n_held_out, n_held_out, dtype=np.int64),
             n_obs_remaining=np.full(n_held_out, n_remaining, dtype=np.int64),
             arc_length_remaining_days=np.full(n_held_out, arc_remaining),

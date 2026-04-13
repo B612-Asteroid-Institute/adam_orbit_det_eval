@@ -131,6 +131,18 @@ def parse_args():
         help="Skip computation of per-(stn, catalog) statistics",
     )
     p.add_argument(
+        "--no-program-stats",
+        action="store_true",
+        default=False,
+        help="Skip computation of per-(stn, program_code) statistics",
+    )
+    p.add_argument(
+        "--min-obs-per-program-group",
+        type=int,
+        default=10,
+        help="Min observations per (stn, program_code) group to report (default: 10)",
+    )
+    p.add_argument(
         "--object-weighted",
         action="store_true",
         default=False,
@@ -224,6 +236,7 @@ def main():
     from adam_orbit_det_eval.looo.analysis import (
         compute_observatory_stats,
         compute_catalog_stats,
+        compute_program_code_stats,
         print_observatory_summary,
     )
 
@@ -291,6 +304,32 @@ def main():
         # Also print a brief catalog summary
         if len(cat_stats) > 0:
             _print_catalog_summary(cat_stats, top_n=args.top_n)
+
+    # --- Compute per-(stn, program_code) statistics ---
+    if not args.no_program_stats:
+        logger.info("Computing per-(observatory, program_code) statistics...")
+        prog_stats = compute_program_code_stats(
+            results,
+            min_obs_remaining=args.min_obs_remaining,
+            min_arc_length_days=args.min_arc_length,
+            max_held_out_fraction=args.max_held_out_frac,
+            max_hold_in_reduced_chi2=args.max_chi2,
+            min_obs_per_group=args.min_obs_per_program_group,
+        )
+        if len(prog_stats) == 0:
+            logger.warning(
+                "No (stn, program_code) groups passed the filters — "
+                "program_code_stats will be empty (likely missing program_code "
+                "column in old results)."
+            )
+        else:
+            logger.info(
+                f"Program-code statistics computed for {len(prog_stats)} "
+                f"(stn, program_code) groups"
+            )
+        prog_stats_path = output_dir / "program_code_stats.parquet"
+        prog_stats.to_parquet(prog_stats_path)
+        logger.info(f"Program-code statistics written to {prog_stats_path}")
 
     logger.info("Analysis complete.")
     logger.info(f"Outputs written to {output_dir}")

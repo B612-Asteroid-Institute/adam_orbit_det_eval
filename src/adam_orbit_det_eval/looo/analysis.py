@@ -74,6 +74,23 @@ class CatalogStats(qv.Table):
     median_chi2_per_obs = qv.Float64Column()
 
 
+class ProgramCodeStats(qv.Table):
+    """Aggregated statistics broken down by (stn, program_code) pair."""
+
+    stn = qv.LargeStringColumn()
+    program_code = qv.LargeStringColumn(nullable=True)
+    n_obs = qv.Int64Column()
+    n_objects = qv.Int64Column()
+    mean_ra_arcsec = qv.Float64Column()
+    mean_dec_arcsec = qv.Float64Column()
+    rms_ra_arcsec = qv.Float64Column()
+    rms_dec_arcsec = qv.Float64Column()
+    median_abs_ra_arcsec = qv.Float64Column()
+    median_abs_dec_arcsec = qv.Float64Column()
+    mean_chi2_per_obs = qv.Float64Column()
+    median_chi2_per_obs = qv.Float64Column()
+
+
 def _nanmean(arr: np.ndarray) -> float:
     v = np.nanmean(arr)
     return float(v) if np.isfinite(v) else np.nan
@@ -445,6 +462,112 @@ def compute_catalog_stats(
         mean_dec_arcsec=[r["mean_dec_arcsec"] for r in rows],
         rms_ra_arcsec=[r["rms_ra_arcsec"] for r in rows],
         rms_dec_arcsec=[r["rms_dec_arcsec"] for r in rows],
+        mean_chi2_per_obs=[r["mean_chi2_per_obs"] for r in rows],
+        median_chi2_per_obs=[r["median_chi2_per_obs"] for r in rows],
+    )
+
+
+def compute_program_code_stats(
+    results: LOOOResult,
+    min_obs_remaining: Optional[int] = None,
+    min_arc_length_days: Optional[float] = None,
+    max_held_out_fraction: Optional[float] = None,
+    max_hold_in_reduced_chi2: Optional[float] = 100.0,
+    min_obs_per_group: int = 10,
+) -> ProgramCodeStats:
+    """
+    Compute statistics broken down by (observatory, program_code) pair.
+
+    program_code comes from the MPC `prog` field and indicates which
+    submitting program / survey the observation belongs to.
+
+    Parameters
+    ----------
+    results : LOOOResult
+    min_obs_remaining, min_arc_length_days, max_held_out_fraction,
+    max_hold_in_reduced_chi2 : see compute_observatory_stats
+    min_obs_per_group : int
+        Minimum observations per (stn, program_code) group to report.
+    """
+    filtered = _filter_results(
+        results,
+        min_obs_remaining=min_obs_remaining,
+        min_arc_length_days=min_arc_length_days,
+        max_held_out_fraction=max_held_out_fraction,
+        max_hold_in_reduced_chi2=max_hold_in_reduced_chi2,
+    )
+
+    tbl = filtered.table
+    if "program_code" not in tbl.schema.names:
+        return ProgramCodeStats.empty()
+
+    stn_col = tbl.column("stn").to_pylist()
+    prog_col = tbl.column("program_code").to_pylist()
+    obj_col = tbl.column("object_id").to_pylist()
+
+    groups = sorted(
+        set(zip(stn_col, prog_col)),
+        key=lambda x: (x[0] or "", x[1] or ""),
+    )
+
+    rows = []
+    for stn, prog in groups:
+        grp_mask = pa.array(
+            [(s == stn and p == prog) for s, p in zip(stn_col, prog_col)]
+        )
+        grp = tbl.filter(grp_mask)
+        n_obs = len(grp)
+        if n_obs < min_obs_per_group:
+            continue
+
+        n_objects = int(len(pc.unique(grp.column("object_id"))))
+
+        ra = np.array(
+            [x for x in grp.column("residual_ra_arcsec").to_pylist() if x is not None],
+            dtype=float,
+        )
+        dec = np.array(
+            [x for x in grp.column("residual_dec_arcsec").to_pylist() if x is not None],
+            dtype=float,
+        )
+        chi2 = np.array(
+            [x for x in grp.column("chi2").to_pylist() if x is not None],
+            dtype=float,
+        )
+
+        rows.append(
+            dict(
+                stn=stn,
+                program_code=prog,
+                n_obs=n_obs,
+                n_objects=n_objects,
+                mean_ra_arcsec=_nanmean(ra),
+                mean_dec_arcsec=_nanmean(dec),
+                rms_ra_arcsec=_nanrms(ra),
+                rms_dec_arcsec=_nanrms(dec),
+                median_abs_ra_arcsec=_nanmedian_abs(ra),
+                median_abs_dec_arcsec=_nanmedian_abs(dec),
+                mean_chi2_per_obs=_nanmean(chi2),
+                median_chi2_per_obs=(
+                    float(np.nanmedian(chi2)) if len(chi2) > 0 else np.nan
+                ),
+            )
+        )
+
+    if not rows:
+        return ProgramCodeStats.empty()
+
+    return ProgramCodeStats.from_kwargs(
+        stn=[r["stn"] for r in rows],
+        program_code=[r["program_code"] for r in rows],
+        n_obs=[r["n_obs"] for r in rows],
+        n_objects=[r["n_objects"] for r in rows],
+        mean_ra_arcsec=[r["mean_ra_arcsec"] for r in rows],
+        mean_dec_arcsec=[r["mean_dec_arcsec"] for r in rows],
+        rms_ra_arcsec=[r["rms_ra_arcsec"] for r in rows],
+        rms_dec_arcsec=[r["rms_dec_arcsec"] for r in rows],
+        median_abs_ra_arcsec=[r["median_abs_ra_arcsec"] for r in rows],
+        median_abs_dec_arcsec=[r["median_abs_dec_arcsec"] for r in rows],
         mean_chi2_per_obs=[r["mean_chi2_per_obs"] for r in rows],
         median_chi2_per_obs=[r["median_chi2_per_obs"] for r in rows],
     )

@@ -194,6 +194,7 @@ def _worker(
 
     # --- Run LOOO ---
     astcats = obj_mpc_obs.astcat.to_pylist()
+    program_codes = obj_mpc_obs.prog.to_pylist()
     try:
         result = run_looo_for_object(
             object_id=object_id,
@@ -202,6 +203,7 @@ def _worker(
             propagator=propagator,
             config=config,
             astcats=astcats,
+            program_codes=program_codes,
             orbit_fitter=orbit_fitter,
         )
     except Exception as e:

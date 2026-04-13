@@ -4,6 +4,8 @@ import numpy as np
 import pyarrow.compute as pc
 import pytest
 from adam_fo.find_orb_orbit_fitter import FindOrbOrbitFitter
+from adam_layup.layup_orbit_fitter import LayupOrbitFitter
+from adam_orbfit.orbfit_orbit_fitter import OrbfitOrbitFitter
 from mpcq import MPCObservations
 from mpcq.orbits import MPCOrbits
 
@@ -16,10 +18,18 @@ mpc_orbits = MPCOrbits.from_parquet(data_dir / "mpc_orbits.parquet")
 objects = mpc_observations.requested_provid.unique().to_pylist()
 # All fitters to benchmark
 find_orb_fitter = FindOrbOrbitFitter(fo_result_dir="fo_dir_benchmark")
+orbfit_orb_fitter = OrbfitOrbitFitter(work_dir="orbfit_dir_benchmark", timeout=360)
+layup_orb_fitter = LayupOrbitFitter(timeout_s=30, min_slice_size=10)
+
+LayupOrbitFitter.bootstrap()
 
 
 @pytest.mark.benchmark(group="initial_orbit_fit")
-@pytest.mark.parametrize("fitter", [find_orb_fitter])
+@pytest.mark.parametrize(
+    "fitter",
+    [find_orb_fitter, orbfit_orb_fitter, layup_orb_fitter],
+    ids=lambda val: f"{type(val).__name__}",
+)
 @pytest.mark.parametrize("object_id", objects)
 def test_initial_orbit_fit_benchmark(benchmark, quality_tracker, object_id, fitter):
     """Check the orbit is fitted and reasonably close to the MPC version"""
@@ -31,6 +41,7 @@ def test_initial_orbit_fit_benchmark(benchmark, quality_tracker, object_id, fitt
         fitter.initial_fit, object_id, od_observations
     )
     assert len(fitted_orbits) > 0
+    assert len(fitted_members) == len(od_observations)
     used_members = fitted_members.solution.sum().as_py()
 
     mpc_orbit = mpc_orbits.apply_mask(
@@ -66,7 +77,6 @@ def test_initial_orbit_fit_benchmark(benchmark, quality_tracker, object_id, fitt
         assert i_d < 2.0  # degrees
         assert raan_d < 5.0  # degrees
         assert ap_d < 20.0  # degrees
-        if (
-            np.isfinite(mpc_comm.P[0]) and mpc_comm.P[0] < 100000
-        ):  # don't check hyperbolic orbits
+        # don't check hyperbolic orbits
+        if np.isfinite(mpc_comm.P[0]) and mpc_comm.P[0] < 100000:
             assert per_d < 10.0  # percent

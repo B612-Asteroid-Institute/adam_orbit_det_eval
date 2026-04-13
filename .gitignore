@@ -22,6 +22,8 @@ data/sim_products/isolation_study_full_20260331/AA*/
 data/sim_products/isolation_study_neo100_20260403/AA*/
 data/sim_products/phase1_assist/
 data/sim_products/phase1_constant_bias/
+# MPC-scale bias-run inputs (shard parquets + manifest); re-fetched via scripts/15_fetch_mpc_scale.py
+data/mpc_scale_*/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

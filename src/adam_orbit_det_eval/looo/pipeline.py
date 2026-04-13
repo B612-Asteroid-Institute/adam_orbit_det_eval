@@ -38,6 +38,7 @@ from mpcq.orbits import MPCOrbits
 
 from ..utils import get_spacebased_stns, mpc_to_od_observations
 from .core import LOOOConfig, LOOOResult, run_looo_for_object
+from .gcs_checkpoint import GCSCheckpointStore
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,7 @@ def _worker(
     checkpoint_dir: str,
     sigma_model: str = "veres2017",
     orbit_fitter: Optional[OrbitFitter] = None,
+    gcs_prefix: Optional[str] = None,
 ) -> Tuple[str, int]:
     """
     Worker function executed in a subprocess.
@@ -218,6 +220,17 @@ def _worker(
         pq.write_table(LOOOResult.empty().table, ckpt)
 
     _log.info(f"{object_id}: done — {len(result)} rows written to {ckpt.name}")
+
+    # --- Optional: upload checkpoint to GCS ---
+    if gcs_prefix is not None:
+        try:
+            store = GCSCheckpointStore(
+                local_dir=checkpoint_dir_path, gcs_prefix=gcs_prefix,
+            )
+            store.upload_checkpoint(object_id)
+        except Exception as e:  # best-effort — local checkpoint is authoritative
+            _log.warning(f"{object_id}: GCS upload failed: {e}")
+
     return object_id, len(result)
 
 
@@ -242,6 +255,7 @@ def run_looo_pipeline(
     write_interval: int = 50,  # kept for API compatibility, no longer used
     sigma_model: str = "veres2017",
     orbit_fitter: Optional[OrbitFitter] = None,
+    gcs_checkpoint_store: Optional[GCSCheckpointStore] = None,
 ) -> LOOOResult:
     """
     Run LOOO cross-validation for all (or a subset of) objects, in parallel.
@@ -275,6 +289,11 @@ def run_looo_pipeline(
         If provided, use this fitter's `initial_fit` for hold-in fits instead
         of the scipy-based `fit_least_squares`. Must be picklable for
         ProcessPoolExecutor.
+    gcs_checkpoint_store : GCSCheckpointStore, optional
+        If provided, mirror checkpoints to GCS. At startup existing GCS
+        checkpoints are downloaded into the local checkpoint dir (resume).
+        During execution each per-object checkpoint is uploaded after write.
+        A SIGTERM handler is registered to flush state on spot preemption.
 
     Returns
     -------
@@ -290,6 +309,21 @@ def run_looo_pipeline(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     checkpoint_dir = output_path.parent / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- Optional: pull checkpoints from GCS for resume ---
+    gcs_prefix: Optional[str] = None
+    if gcs_checkpoint_store is not None:
+        # Point the store at our checkpoint dir in case caller didn't.
+        gcs_checkpoint_store.local_dir = checkpoint_dir
+        gcs_prefix = gcs_checkpoint_store.gcs_prefix
+        try:
+            gcs_checkpoint_store.sync_from_gcs()
+        except Exception as e:
+            logger.warning(f"sync_from_gcs failed at startup: {e}")
+        try:
+            gcs_checkpoint_store.register_sigterm_handler()
+        except Exception as e:
+            logger.warning(f"register_sigterm_handler failed: {e}")
 
     # Workers load from disk — write temporary parquet files if inputs aren't
     # already on disk.  We reuse the existing output_dir for temp files.
@@ -331,6 +365,7 @@ def run_looo_pipeline(
                 str(checkpoint_dir),
                 sigma_model,
                 orbit_fitter,
+                gcs_prefix,
             ): oid
             for oid in remaining
         }

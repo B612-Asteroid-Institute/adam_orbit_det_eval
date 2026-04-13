@@ -20,8 +20,8 @@ keywords = ["astronomy", "orbital mechanics", "orbit determination"]
 dependencies = [
   "adam_core>=0.5.5",
   "adam_fo",
-  "adam_assist",
-  "adam_orbfit",
+  "adam_layup @ git+git@github.com:B612-Asteroid-Institute/adam-layup.git",
+  "adam_orbfit @ git+git@github.com:B612-Asteroid-Institute/adam-orbtfit.git",
   "numpy>=2.0.0",
   "pyarrow>=13.0.0",
   "quivr>=0.8.1",
@@ -101,5 +101,5 @@ typecheck = "mypy --strict ./src/adam_orbit_det_eval"
 
 test = "pytest --benchmark-skip -m 'not profile' {args}"
 doctest = "pytest --doctest-plus --doctest-only"
-benchmark = "pytest --benchmark-only {args}"
+benchmark = "pytest --benchmark-only --benchmark-min-rounds=1  {args}"
 coverage = "pytest --benchmark-skip --cov=adam_orbit_det_eval --cov-report=xml -m 'not profile' {args}"

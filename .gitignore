@@ -24,6 +24,8 @@ data/sim_products/phase1_assist/
 data/sim_products/phase1_constant_bias/
 # MPC-scale bias-run inputs (shard parquets + manifest); re-fetched via scripts/15_fetch_mpc_scale.py
 data/mpc_scale_*/
+# Pilot validation outputs (local integration tests)
+data/pilot_validation/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

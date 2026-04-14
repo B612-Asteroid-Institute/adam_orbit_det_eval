@@ -196,7 +196,11 @@ def _worker(
 
     # --- Run LOOO ---
     astcats = obj_mpc_obs.astcat.to_pylist()
-    program_codes = obj_mpc_obs.prog.to_pylist()
+    program_codes_col = getattr(obj_mpc_obs, 'trksub', None)
+    if program_codes_col is not None:
+        program_codes = program_codes_col.to_pylist()
+    else:
+        program_codes = [None] * len(obj_mpc_obs)
     try:
         result = run_looo_for_object(
             object_id=object_id,

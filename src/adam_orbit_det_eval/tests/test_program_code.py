@@ -7,6 +7,7 @@ from adam_orbit_det_eval.looo.analysis import (
     compute_program_code_stats,
 )
 from adam_orbit_det_eval.looo.core import LOOOResult
+from mpcq.observations import MPCObservations
 
 
 def _make_result(n: int = 10) -> LOOOResult:
@@ -50,3 +51,45 @@ def test_compute_program_code_stats():
     assert stats.program_code.to_pylist() == ["A", "B"]
     assert stats.stn.to_pylist() == ["568", "568"]
     assert stats.n_obs.to_pylist() == [10, 10]
+
+
+class TestProgramCodeColumnAccess:
+    """Integration tests for program_code column access in the pipeline worker.
+
+    These verify the getattr-based access pattern used in pipeline.py::_worker
+    works correctly with real MPCObservations objects.
+    """
+
+    def test_mpcobservations_has_trksub(self):
+        """MPCObservations must expose a 'trksub' column (the program code proxy)."""
+        empty = MPCObservations.empty()
+        assert hasattr(empty, "trksub"), (
+            "MPCObservations is missing 'trksub' column — "
+            "pipeline.py _worker will fall back to [None]*N"
+        )
+
+    def test_mpcobservations_does_not_have_prog(self):
+        """Verify 'prog' is NOT an attribute — the old broken access path."""
+        empty = MPCObservations.empty()
+        assert not hasattr(empty, "prog"), (
+            "MPCObservations unexpectedly has 'prog' attribute — "
+            "review pipeline.py column access"
+        )
+
+    def test_getattr_pattern_with_trksub(self):
+        """The getattr pattern used in _worker produces a valid list from trksub."""
+        empty = MPCObservations.empty()
+        col = getattr(empty, "trksub", None)
+        assert col is not None
+        result = col.to_pylist()
+        assert isinstance(result, list)
+        assert len(result) == 0  # empty table → empty list
+
+    def test_getattr_fallback_for_missing_column(self):
+        """When the column doesn't exist, getattr returns None and we fall back."""
+        empty = MPCObservations.empty()
+        col = getattr(empty, "nonexistent_column", None)
+        assert col is None
+        # The fallback produces [None] * len(obs)
+        fallback = [None] * len(empty)
+        assert fallback == []

@@ -131,6 +131,13 @@ def parse_args():
              "Only used when --orbit-fitter=findorb.",
     )
     p.add_argument(
+        "--strict-fitter",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Abort if the requested orbit fitter is not importable (default: True). "
+             "Use --no-strict-fitter to allow silent fallback to scipy DC.",
+    )
+    p.add_argument(
         "--object-ids",
         nargs="*",
         help="Restrict to these object IDs (default: all objects in input)",
@@ -144,11 +151,19 @@ def parse_args():
     return p.parse_args()
 
 
-def get_orbit_fitter(name: str, fo_result_dir: str):
+def get_orbit_fitter(name: str, fo_result_dir: str, strict: bool = True):
     """Build an OrbitFitter instance (or None for scipy DC fallback).
 
-    Falls back to scipy DC with a warning if the requested fitter isn't
-    available locally.
+    Parameters
+    ----------
+    name : str
+        Fitter name: "scipy", "findorb", or "native".
+    fo_result_dir : str
+        Directory for FindOrb intermediate outputs.
+    strict : bool
+        If True (default), abort with sys.exit(1) when the requested fitter
+        is not importable. If False, fall back to scipy DC with a critical
+        log message.
     """
     if name == "scipy":
         return None
@@ -157,18 +172,28 @@ def get_orbit_fitter(name: str, fo_result_dir: str):
             from adam_fo.find_orb_orbit_fitter import FindOrbOrbitFitter
             return FindOrbOrbitFitter(fo_result_dir=fo_result_dir)
         except ImportError as e:
-            logger.warning(
-                f"FindOrbOrbitFitter unavailable ({e}); falling back to scipy DC."
+            msg = (
+                f"FindOrbOrbitFitter unavailable ({e}). "
+                "Cannot use --orbit-fitter=findorb."
             )
+            if strict:
+                logger.critical(msg + " Aborting (use --no-strict-fitter to allow fallback).")
+                sys.exit(1)
+            logger.critical(msg + " Falling back to scipy DC.")
             return None
     if name == "native":
         try:
             from adam_core.orbit_determination.native_orbit_fitter import NativeOrbitFitter
             return NativeOrbitFitter()
         except ImportError as e:
-            logger.warning(
-                f"NativeOrbitFitter unavailable ({e}); falling back to scipy DC."
+            msg = (
+                f"NativeOrbitFitter unavailable ({e}). "
+                "Cannot use --orbit-fitter=native."
             )
+            if strict:
+                logger.critical(msg + " Aborting (use --no-strict-fitter to allow fallback).")
+                sys.exit(1)
+            logger.critical(msg + " Falling back to scipy DC.")
             return None
     raise ValueError(f"Unknown orbit fitter: {name}")
 
@@ -245,7 +270,7 @@ def main():
 
     # --- Configure orbit fitter ---
     fo_result_dir = args.fo_result_dir or str(output_dir / "findorb_work")
-    orbit_fitter = get_orbit_fitter(args.orbit_fitter, fo_result_dir)
+    orbit_fitter = get_orbit_fitter(args.orbit_fitter, fo_result_dir, strict=args.strict_fitter)
     fitter_name = type(orbit_fitter).__name__ if orbit_fitter is not None else "scipy_fit_least_squares"
     logger.info(f"Using orbit fitter: {fitter_name}")
 

@@ -8,7 +8,7 @@ Criteria:
   - Minimum observations remaining after holdout
   - Minimum arc length remaining after holdout
   - Maximum fraction of observations held out
-  - Comet exclusion (object IDs starting with C/ or P/)
+  - Comet exclusion (C/, P/, D/, A/, I/ prefixes and numbered periodic comets)
 
 Note: This module deliberately avoids importing from .core to prevent
 circular imports. It accepts LOOOConfig via TYPE_CHECKING only and uses
@@ -18,6 +18,7 @@ duck-typing at runtime.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Dict, Optional
 
@@ -87,9 +88,26 @@ class ExclusionStats:
         }
 
 
+_COMET_PREFIX_RE = re.compile(r"^\d+[PDCIA]/")  # e.g., 1P/, 109P/, 2I/
+_COMET_SIMPLE_RE = re.compile(r"^\d+[PDCI]$")  # e.g., 1P, 109P (no slash, just number+letter)
+
+
 def is_comet(object_id: str) -> bool:
-    """Exclude comets (object IDs starting with 'C/' or 'P/')."""
-    return object_id.startswith("C/") or object_id.startswith("P/")
+    """Check if object_id represents a comet or comet-like object.
+
+    Detects:
+      - Letter-prefix designations: C/, P/, D/, A/, I/
+      - Numbered periodic comets: 1P, 1P/Halley, 109P/Swift-Tuttle
+      - Numbered interstellar objects: 2I/Borisov
+    """
+    oid = object_id.strip()
+    # Letter-prefix designations: C/2023 A1, P/2024 B2, D/..., A/..., I/...
+    if oid[:2] in ("C/", "P/", "D/", "A/", "I/"):
+        return True
+    # Numbered periodic comets: 1P, 1P/Halley, 109P, 109P/Swift-Tuttle
+    if _COMET_PREFIX_RE.match(oid) or _COMET_SIMPLE_RE.match(oid):
+        return True
+    return False
 
 
 def _arc_length_days_from_mjds(mjds: np.ndarray) -> float:

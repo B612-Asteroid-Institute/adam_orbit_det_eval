@@ -1,0 +1,66 @@
+{
+  "name": "mpc-pilot-real-data-looo",
+  "namespace": "research",
+  "queue": "cpu-spot",
+  "mode": "indexed",
+  "build": {
+    "workspace_root": "/Users/kathleenkiker/beads_agent_setup",
+    "projects": [
+      {
+        "path": "adam_core",
+        "build": "true",
+        "install": "PDM_BUILD_SCM_VERSION=99.0.0 pip install .",
+        "test": "false"
+      },
+      {
+        "path": "adam_assist",
+        "build": "true",
+        "install": "pip install .",
+        "test": "false"
+      },
+      {
+        "path": "adam_fo",
+        "build": "true",
+        "install": "pip install . && build-fo",
+        "test": "false"
+      },
+      {
+        "path": "adam_orbit_det_eval",
+        "build": "true",
+        "install": "pip install .",
+        "test": "false"
+      }
+    ],
+    "image": "us-west1-docker.pkg.dev/moeyens-thor-dev/ai/mpc-real-data-looo:latest",
+    "method": "cloud",
+    "strategy": "layered",
+    "system_packages": ["build-essential", "git", "wget"]
+  },
+  "resources": {
+    "cpu": "16",
+    "memory": "32Gi",
+    "gpu": 0
+  },
+  "job": {
+    "completions": 4,
+    "parallelism": 4,
+    "ttl_seconds_after_finished": 172800
+  },
+  "retry": {
+    "backoff_limit_per_index": 2,
+    "max_failed_indexes": 1
+  },
+  "outputs": {
+    "gcs_prefix": "gs://exp-research/mpc-real-data-looo-pilot"
+  },
+  "command": [
+    "python",
+    "/app/adam_orbit_det_eval/scripts/12_run_looo_cloud_shard.py",
+    "--gcs-input-prefix", "gs://exp-research/mpc-real-data-looo-pilot/input",
+    "--gcs-output-prefix", "gs://exp-research/mpc-real-data-looo-pilot/output",
+    "--propagator", "assist",
+    "--orbit-fitter", "findorb",
+    "--strict-fitter",
+    "--max-processes", "14"
+  ]
+}

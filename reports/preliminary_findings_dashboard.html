@@ -79,6 +79,40 @@ section p { margin: 0 0 14px 0; max-width: 820px; }
 }
 .big-label { color: var(--text); font-size: 15px; max-width: 560px; }
 
+.findings {
+  margin-top: 22px;
+  display: grid;
+  gap: 14px;
+}
+.finding {
+  border: 1px solid var(--rule);
+  border-left: 4px solid var(--accent);
+  border-radius: 6px;
+  padding: 14px 18px;
+  background: #ffffff;
+}
+.finding.alert { border-left-color: var(--warn); background: var(--warn-soft); }
+.finding .hdr {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.finding .body { font-size: 15px; line-height: 1.5; }
+.finding code.sta {
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  font-size: 13px;
+  color: var(--accent);
+  font-weight: 600;
+  margin: 0 1px;
+}
+
 .plot-frame {
   border: 1px solid var(--rule);
   border-radius: 8px;
@@ -184,6 +218,33 @@ details.methodology .body { padding: 0 20px 18px 20px; max-width: 820px; }
   <div class="big-stat">
     <div class="big-number" id="n-significant">—</div>
     <div class="big-label">of 246 observatories show <strong>statistically significant</strong> astrometric bias — the 95% confidence interval for the mean offset in right ascension or declination excludes zero.</div>
+  </div>
+
+  <div class="findings">
+    <div class="finding">
+      <div class="hdr">Top 3 most biased stations (≥10 objects, 95% CI excludes zero)</div>
+      <div class="body">
+        <code class="sta">675</code> at <strong>(−1.34″ RA, −0.33″ Dec)</strong>,
+        <code class="sta">910</code> at <strong>(+0.92″ RA, −0.08″ Dec)</strong>,
+        <code class="sta">704</code> at <strong>(+0.21″ RA, +0.43″ Dec)</strong>.
+        Ranked by total bias magnitude √(RA² + Dec²). Station <code class="sta">413</code> has a comparable raw magnitude (+0.98″ RA) but its confidence interval spans zero, so we exclude it from the headline and flag it as a noisy point estimate worth reviewing.
+      </div>
+    </div>
+
+    <div class="finding alert">
+      <div class="hdr">Headline — station 675 is an extreme outlier</div>
+      <div class="body">
+        Station <code class="sta">675</code> shows a right-ascension bias of <strong>−1.34″</strong>, roughly three times the magnitude of the largest bias seen at any previously known-biased station. Its χ²-per-observation of <strong>72</strong> means its reported astrometric uncertainties understate the true scatter by nearly an order of magnitude. This station was already on a short "needs investigation" list from the original 3,500-object run; the preliminary catalog confirms it is worth a targeted look before the full-scale run.
+      </div>
+    </div>
+
+    <div class="finding">
+      <div class="hdr">Candidate novel findings — high-bias stations not previously flagged</div>
+      <div class="body">
+        Beyond the known-biased anchor stations, seven observatories meet our significance threshold (total bias ≥ 0.35″, ≥10 contributing objects, 95% CI excludes zero in at least one axis) and warrant follow-up investigation at full scale:
+        <code class="sta">910</code>, <code class="sta">734</code>, <code class="sta">H55</code>, <code class="sta">599</code>, <code class="sta">120</code>, <code class="sta">G98</code>, <code class="sta">D35</code>. These are candidate additions to the observatory-bias watch list pending confirmation with a larger sample.
+      </div>
+    </div>
   </div>
 </section>
 

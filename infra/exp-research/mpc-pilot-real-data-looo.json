@@ -13,7 +13,7 @@
         "test": "false"
       },
       {
-        "path": "adam_assist",
+        "path": "adam-assist",
         "build": "true",
         "install": "pip install .",
         "test": "false"

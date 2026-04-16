@@ -1,0 +1,8 @@
+# Exclude large data files from cloud build context.
+# The Docker image reads data from GCS at runtime, not from the build context.
+data/
+runs/
+reports/
+*.egg-info/
+__pycache__/
+.pytest_cache/

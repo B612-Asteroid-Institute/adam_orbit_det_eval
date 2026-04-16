@@ -1,8 +1,14 @@
-# Exclude large data files from cloud build context.
+# Exclude large data files and dev artifacts from cloud build context.
 # The Docker image reads data from GCS at runtime, not from the build context.
 data/
 runs/
 reports/
+.venv/
+.git/
 *.egg-info/
 __pycache__/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/

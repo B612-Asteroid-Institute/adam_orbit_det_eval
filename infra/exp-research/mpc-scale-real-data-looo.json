@@ -1,6 +1,6 @@
 {
   "name": "mpc-real-data-looo",
-  "namespace": "research",
+  "namespace": "research-kat",
   "queue": "cpu-spot",
   "mode": "indexed",
   "build": {
@@ -43,7 +43,7 @@
   },
   "job": {
     "completions": 200,
-    "parallelism": 64,
+    "parallelism": 24,
     "ttl_seconds_after_finished": 172800
   },
   "retry": {

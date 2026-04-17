@@ -164,13 +164,15 @@ def get_propagator_class(name: str):
         raise ValueError(f"Unknown propagator: {name}")
 
 
-def get_orbit_fitter(name: str, strict: bool = True):
+def get_orbit_fitter(name: str, fo_result_dir: str, strict: bool = True):
     """Build an OrbitFitter instance (or None for scipy DC fallback).
 
     Parameters
     ----------
     name : str
         Fitter name: "scipy", "findorb", or "native".
+    fo_result_dir : str
+        Directory for FindOrb intermediate outputs.
     strict : bool
         If True (default), abort when the requested fitter is not importable.
     """
@@ -179,7 +181,7 @@ def get_orbit_fitter(name: str, strict: bool = True):
     if name == "findorb":
         try:
             from adam_fo.find_orb_orbit_fitter import FindOrbOrbitFitter
-            return FindOrbOrbitFitter()
+            return FindOrbOrbitFitter(fo_result_dir=fo_result_dir)
         except ImportError as e:
             msg = (
                 f"FindOrbOrbitFitter unavailable ({e}). "
@@ -272,6 +274,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "Use --no-strict-fitter to allow silent fallback to scipy DC.",
     )
     p.add_argument(
+        "--fo-result-dir",
+        type=str,
+        default="/tmp/fo_work",
+        help="Directory for FindOrb intermediate files (default: /tmp/fo_work)",
+    )
+    p.add_argument(
         "--max-processes",
         type=int,
         default=None,
@@ -324,7 +332,8 @@ def main(argv: list[str] | None = None) -> None:
 
         # --- Configure propagator and orbit fitter ---
         propagator_class = get_propagator_class(args.propagator)
-        orbit_fitter = get_orbit_fitter(args.orbit_fitter, strict=args.strict_fitter)
+        os.makedirs(args.fo_result_dir, exist_ok=True)
+        orbit_fitter = get_orbit_fitter(args.orbit_fitter, args.fo_result_dir, strict=args.strict_fitter)
 
         # --- Configure LOOO pipeline ---
         from adam_orbit_det_eval.looo.core import LOOOConfig

@@ -583,8 +583,12 @@ def print_observatory_summary(stats: ObservatoryStats, top_n: int = 30) -> None:
     import pandas as pd
     df = stats.table.to_pandas().sort_values("n_obs", ascending=False).head(top_n)
 
-    print(f"\n{'STN':<6} {'N_obs':>7} {'N_obj':>6} {'bias_RA\"':>9} {'bias_Dec\"':>10} "
-          f"{'RMS_RA\"':>8} {'RMS_Dec\"':>9} {'chi2/obs':>9}")
+    hdr_bias_ra = 'bias_RA"'
+    hdr_bias_dec = 'bias_Dec"'
+    hdr_rms_ra = 'RMS_RA"'
+    hdr_rms_dec = 'RMS_Dec"'
+    print(f"\n{'STN':<6} {'N_obs':>7} {'N_obj':>6} {hdr_bias_ra:>9} {hdr_bias_dec:>10} "
+          f"{hdr_rms_ra:>8} {hdr_rms_dec:>9} {'chi2/obs':>9}")
     print("-" * 72)
     for _, row in df.iterrows():
         print(

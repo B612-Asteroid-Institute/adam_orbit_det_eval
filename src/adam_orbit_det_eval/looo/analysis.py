@@ -153,9 +153,12 @@ def _filter_results(
             pc.less_equal(results.held_out_fraction, max_held_out_fraction),
         )
     if max_hold_in_reduced_chi2 is not None:
-        valid_chi2 = pc.and_(
-            pc.is_valid(results.hold_in_reduced_chi2),
-            pc.less_equal(results.hold_in_reduced_chi2, max_hold_in_reduced_chi2),
+        valid_chi2 = pc.fill_null(
+            pc.and_(
+                pc.is_valid(results.hold_in_reduced_chi2),
+                pc.less_equal(results.hold_in_reduced_chi2, max_hold_in_reduced_chi2),
+            ),
+            False,
         )
         mask = pc.and_(mask, valid_chi2)
     return results.apply_mask(mask)

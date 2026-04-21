@@ -1,0 +1,59 @@
+# Pilot overlay image for MPC-scale real-data LOOO cloud run.
+#
+# Layers workspace adam_core + adam_orbit_det_eval on top of the isolation study
+# base image, then builds Find_Orb (binary + ephemerides) via build-fo.
+#
+# The base image supplies: Python 3.11, build-essential, ASSIST, adam_fo package,
+# adam-assist, google-cloud-storage, and all transitive deps.
+# It does NOT include the Find_Orb binary or ephemeris files — build-fo adds them.
+#
+# Usage (Cloud Build):
+#   gcloud builds submit --tag <registry>/<image>:<tag> \
+#     --project moeyens-thor-dev \
+#     --machine-type e2-highcpu-8 \
+#     --timeout 1800s \
+#     /path/to/context/
+#
+FROM us-west1-docker.pkg.dev/moeyens-thor-dev/ai/mpc-isolation-study:latest-20260409170834
+
+WORKDIR /app
+
+# --- Install build deps needed by build-fo (git for cloning, wget for ephemerides) ---
+RUN apt-get update && apt-get install -y --no-install-recommends git wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- Build Find_Orb binary + download DE440t and bc405.dat ephemerides ---
+# Must run BEFORE overlaying packages so build-fo uses the base image's adam_fo.
+# Result: /root/.local/share/adam_fo/find_orb/{find_orb binary, .find_orb/linux_p1550p2650.440t, bc405.dat}
+RUN build-fo
+
+# --- Overlay workspace adam_core (fixes refine_fit ABC mismatch) ---
+COPY adam_core/ /app/adam_core/
+RUN cd /app/adam_core && PDM_BUILD_SCM_VERSION=99.0.0 pip install --no-cache-dir --no-deps .
+
+# --- Overlay workspace adam_orbit_det_eval (all bug fixes) ---
+COPY adam_orbit_det_eval/ /app/adam_orbit_det_eval/
+RUN cd /app/adam_orbit_det_eval && pip install --no-cache-dir --no-deps .
+
+# --- Import-level smoke tests (fast, catch missing deps) ---
+RUN python -c "from adam_fo.find_orb_orbit_fitter import FindOrbOrbitFitter; f = FindOrbOrbitFitter(fo_result_dir='/tmp/fo_smoke'); print('findorb instantiation OK')"
+RUN python -c "from adam_orbit_det_eval.looo.pipeline import run_looo_pipeline; print('pipeline import OK')"
+RUN python -c "from adam_assist import ASSISTPropagator; print('assist import OK')"
+
+# --- Verify Find_Orb artifacts exist (catches build-fo failures) ---
+RUN python -c "\
+from adam_fo.config import LINUX_JPL_PATH, BC405_FILENAME, FO_BINARY_DIR; \
+assert LINUX_JPL_PATH.exists(), f'DE440t not found at {LINUX_JPL_PATH}'; \
+assert BC405_FILENAME.exists(), f'bc405.dat not found at {BC405_FILENAME}'; \
+print(f'DE440t: {LINUX_JPL_PATH} ({LINUX_JPL_PATH.stat().st_size / 1e6:.0f} MB)'); \
+print(f'bc405:  {BC405_FILENAME} ({BC405_FILENAME.stat().st_size / 1e6:.0f} MB)'); \
+print('find_orb artifacts OK')"
+
+# --- Build-time E2E smoke test (the gate) ---
+# Copies a 2-object fixture and runs the full LOOO pipeline + analysis.
+# If this step fails, the build fails and no image is pushed.
+COPY adam_orbit_det_eval/tests/fixtures/smoke_shard/ /app/fixtures/smoke_shard/
+COPY adam_orbit_det_eval/tests/fixtures/smoke_test_pipeline.py /app/fixtures/smoke_test_pipeline.py
+RUN python /app/fixtures/smoke_test_pipeline.py
+
+ENTRYPOINT ["python", "/app/adam_orbit_det_eval/scripts/12_run_looo_cloud_shard.py"]

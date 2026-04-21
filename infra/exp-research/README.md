@@ -111,6 +111,30 @@ Based on the 3,500-object isolation study run:
 | Output size | ~10-20 GB across all shards |
 | End-to-end wall time | ~12-24 hours with 64-way parallelism |
 
+## Monitoring
+
+The `scripts/monitor_cloud_job.sh` watcher catches the deadlock/stall signature
+we saw on the ojo pilot (pods `Running` but hung at near-zero CPU with no new
+GCS SUCCESS markers). Launch it alongside every submit in a second terminal:
+
+```bash
+cd adam_orbit_det_eval
+./scripts/monitor_cloud_job.sh \
+    --job-name mpc-real-data-looo \
+    --namespace research \
+    --output-prefix gs://exp-research/mpc-real-data-looo/output \
+    --expected-shard-minutes 420 \
+    --interval-seconds 300
+```
+
+Each cycle writes a SUMMARY line to stdout and to a rotating log under
+`logs/cloud_monitor_<job>_<UTC>.log`. Threshold trips raise the terminal bell
+and a macOS notification, and dump `describe pod` + the last 200 log lines
+to `logs/forensics_*.log` for post-mortem. The script only calls read-only
+`kubectl` / `gsutil` verbs (no apply/delete). Run `--help` for the full flag
+list (warmup grace, CPU %, FAILED budget, etc.). Stop with `Ctrl-C` or let
+`--cycles N` bound the run (e.g. `--cycles 1` for a one-shot health check).
+
 ## Customization
 
 The GCS paths in `mpc-scale-real-data-looo.json` can be edited directly.

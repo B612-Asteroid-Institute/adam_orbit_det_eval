@@ -139,7 +139,9 @@ def _filter_results(
     max_hold_in_reduced_chi2: Optional[float] = None,
 ) -> LOOOResult:
     """Apply additional stratification filters to the result set."""
-    mask = pa.array([True] * len(results))
+    if len(results) == 0:
+        return results
+    mask = pa.array([True] * len(results), type=pa.bool_())
     if min_obs_remaining is not None:
         mask = pc.and_(mask, pc.greater_equal(results.n_obs_remaining, min_obs_remaining))
     if min_arc_length_days is not None:

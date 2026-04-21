@@ -3,39 +3,7 @@
   "namespace": "research-kat",
   "queue": "cpu-spot",
   "mode": "indexed",
-  "build": {
-    "workspace_root": "/Users/kathleenkiker/beads_agent_setup",
-    "projects": [
-      {
-        "path": "adam_core",
-        "build": "true",
-        "install": "PDM_BUILD_SCM_VERSION=99.0.0 pip install .",
-        "test": "false"
-      },
-      {
-        "path": "adam-assist",
-        "build": "true",
-        "install": "pip install .",
-        "test": "false"
-      },
-      {
-        "path": "adam_fo",
-        "build": "true",
-        "install": "pip install . && build-fo",
-        "test": "false"
-      },
-      {
-        "path": "adam_orbit_det_eval",
-        "build": "true",
-        "install": "pip install .",
-        "test": "false"
-      }
-    ],
-    "image": "us-west1-docker.pkg.dev/moeyens-thor-dev/ai/mpc-real-data-looo:latest",
-    "method": "cloud",
-    "strategy": "layered",
-    "system_packages": ["build-essential", "git", "wget"]
-  },
+  "image": "us-west1-docker.pkg.dev/moeyens-thor-dev/ai/mpc-real-data-looo:full-20260420",
   "resources": {
     "cpu": "16",
     "memory": "32Gi",

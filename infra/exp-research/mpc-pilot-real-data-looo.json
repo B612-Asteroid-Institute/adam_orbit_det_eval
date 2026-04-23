@@ -1,12 +1,12 @@
 {
   "name": "mpc-pilot-real-data-looo",
   "namespace": "research",
-  "queue": "cpu-spot",
+  "queue": "cpu-ondemand",
   "mode": "indexed",
-  "image": "us-west1-docker.pkg.dev/moeyens-thor-dev/ai/mpc-real-data-looo:pilot-20260416114936",
+  "image": "us-west1-docker.pkg.dev/moeyens-thor-dev/ai/mpc-real-data-looo:pilot-v10-20260423",
   "resources": {
-    "cpu": "16",
-    "memory": "32Gi",
+    "cpu": "6",
+    "memory": "24Gi",
     "gpu": 0
   },
   "job": {
@@ -29,6 +29,6 @@
     "--propagator", "assist",
     "--orbit-fitter", "findorb",
     "--strict-fitter",
-    "--max-processes", "14"
+    "--max-processes", "4"
   ]
 }

@@ -1,0 +1,339 @@
+"""
+Parallel LOOO pipeline over a collection of objects.
+
+Uses ProcessPoolExecutor so each worker runs in its own process with its own
+propagator instance.  Results are checkpointed per-object so interrupted runs
+can be resumed without reprocessing completed objects.
+
+Usage
+-----
+from adam_orbit_det_eval.looo.pipeline import run_looo_pipeline
+
+results = run_looo_pipeline(
+    mpc_observations=mpc_obs,   # MPCObservations
+    mpc_orbits=mpc_orbits,       # MPCOrbits
+    propagator_class=ASSISTPropagator,
+    output_path=Path("results/looo_results.parquet"),
+    max_processes=6,
+)
+"""
+
+import logging
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from pathlib import Path
+from typing import List, Optional, Tuple, Type
+
+import pyarrow as pa
+import pyarrow.compute as pc
+import pyarrow.parquet as pq
+
+import quivr as qv
+
+from adam_core.propagator.propagator import Propagator
+
+from mpcq.observations import MPCObservations
+from mpcq.orbits import MPCOrbits
+
+from ..utils import get_spacebased_stns, mpc_to_od_observations
+from .core import LOOOConfig, LOOOResult, run_looo_for_object
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint helpers
+# ---------------------------------------------------------------------------
+
+def _checkpoint_path(checkpoint_dir: Path, object_id: str) -> Path:
+    """Return the per-object checkpoint file path."""
+    safe_id = object_id.replace("/", "_").replace(" ", "_")
+    return checkpoint_dir / f"{safe_id}.parquet"
+
+
+def _load_completed_ids(checkpoint_dir: Path) -> set:
+    """Return the set of object IDs that already have a checkpoint file."""
+    if not checkpoint_dir.exists():
+        return set()
+    completed = set()
+    for f in checkpoint_dir.glob("*.parquet"):
+        try:
+            tbl = pq.read_table(f, columns=["object_id"])
+            completed.update(tbl.column("object_id").unique().to_pylist())
+        except Exception:
+            pass  # corrupt checkpoint — will be re-run
+    return completed
+
+
+def merge_checkpoints(checkpoint_dir: Path, output_path: Path) -> LOOOResult:
+    """Merge all per-object checkpoint files into a single Parquet result file."""
+    checkpoint_files = sorted(checkpoint_dir.glob("*.parquet"))
+    if not checkpoint_files:
+        return LOOOResult.empty()
+
+    writer = None
+    total_rows = 0
+    try:
+        for f in checkpoint_files:
+            tbl = pq.read_table(f)
+            if len(tbl) == 0:
+                continue
+            if writer is None:
+                writer = pq.ParquetWriter(output_path, tbl.schema)
+            writer.write_table(tbl)
+            total_rows += len(tbl)
+    finally:
+        if writer is not None:
+            writer.close()
+
+    logger.info(
+        f"Merged {len(checkpoint_files)} checkpoints → {output_path} ({total_rows} rows)"
+    )
+    if output_path.exists():
+        return LOOOResult(pq.read_table(output_path))
+    return LOOOResult.empty()
+
+
+# ---------------------------------------------------------------------------
+# Per-object worker — module-level so it is picklable
+# ---------------------------------------------------------------------------
+
+def _worker(
+    object_id: str,
+    obs_parquet: str,
+    orbits_parquet: str,
+    propagator_class_fqn: str,
+    config: LOOOConfig,
+    checkpoint_dir: str,
+    sigma_model: str = "veres2017",
+) -> Tuple[str, int]:
+    """
+    Worker function executed in a subprocess.
+
+    Loads its own data slice from disk so that large tables don't need to be
+    pickled across process boundaries.  Writes a checkpoint and returns
+    (object_id, n_rows).
+    """
+    import importlib
+    import logging as _logging
+
+    _logging.basicConfig(
+        level=_logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    _log = _logging.getLogger(__name__)
+
+    checkpoint_dir_path = Path(checkpoint_dir)
+    ckpt = _checkpoint_path(checkpoint_dir_path, object_id)
+
+    # --- Load data slice for this object ---
+    try:
+        all_obs = MPCObservations(pq.read_table(obs_parquet))
+        all_orb = MPCOrbits(pq.read_table(orbits_parquet))
+    except Exception as e:
+        _log.error(f"{object_id}: failed to load data: {e}")
+        pq.write_table(LOOOResult.empty().table, ckpt)
+        return object_id, 0
+
+    obs_mask = pc.equal(all_obs.requested_provid, object_id)
+    obj_mpc_obs = all_obs.apply_mask(obs_mask)
+    orbit_mask = pc.equal(all_orb.requested_provid, object_id)
+    obj_mpc_orbit = all_orb.apply_mask(orbit_mask)
+
+    if len(obj_mpc_obs) == 0 or len(obj_mpc_orbit) == 0:
+        _log.warning(f"{object_id}: missing observations or orbit, skipping")
+        pq.write_table(LOOOResult.empty().table, ckpt)
+        return object_id, 0
+
+    # --- Drop space-based observatories ---
+    spacebased = set(get_spacebased_stns())
+    ground_mask = pc.invert(
+        pc.is_in(
+            obj_mpc_obs.stn,
+            value_set=pa.array(list(spacebased), type=pa.large_utf8()),
+        )
+    )
+    obj_mpc_obs = obj_mpc_obs.apply_mask(ground_mask)
+    if len(obj_mpc_obs) == 0:
+        _log.warning(f"{object_id}: no ground-based observations, skipping")
+        pq.write_table(LOOOResult.empty().table, ckpt)
+        return object_id, 0
+
+    # --- Convert to OD observations ---
+    try:
+        od_obs = mpc_to_od_observations(obj_mpc_obs, prevent_nans=True, sigma_model=sigma_model)
+    except Exception as e:
+        _log.warning(f"{object_id}: mpc_to_od_observations failed: {e}")
+        pq.write_table(LOOOResult.empty().table, ckpt)
+        return object_id, 0
+    if od_obs is None:
+        _log.warning(f"{object_id}: could not convert observations, skipping")
+        pq.write_table(LOOOResult.empty().table, ckpt)
+        return object_id, 0
+
+    # --- Get reference orbit ---
+    try:
+        reference_orbit = obj_mpc_orbit.orbits()
+    except Exception as e:
+        _log.warning(f"{object_id}: could not get reference orbit: {e}")
+        pq.write_table(LOOOResult.empty().table, ckpt)
+        return object_id, 0
+
+    # --- Instantiate propagator ---
+    try:
+        module_name, class_name = propagator_class_fqn.rsplit(".", 1)
+        mod = importlib.import_module(module_name)
+        propagator_class = getattr(mod, class_name)
+        propagator = propagator_class()
+    except Exception as e:
+        _log.error(f"{object_id}: could not instantiate propagator {propagator_class_fqn}: {e}")
+        pq.write_table(LOOOResult.empty().table, ckpt)
+        return object_id, 0
+
+    # --- Run LOOO ---
+    astcats = obj_mpc_obs.astcat.to_pylist()
+    try:
+        result = run_looo_for_object(
+            object_id=object_id,
+            observations=od_obs,
+            reference_orbit=reference_orbit,
+            propagator=propagator,
+            config=config,
+            astcats=astcats,
+        )
+    except Exception as e:
+        _log.error(f"{object_id}: run_looo_for_object failed: {e}", exc_info=True)
+        pq.write_table(LOOOResult.empty().table, ckpt)
+        return object_id, 0
+
+    # --- Write checkpoint ---
+    if len(result) > 0:
+        result.to_parquet(ckpt)
+    else:
+        pq.write_table(LOOOResult.empty().table, ckpt)
+
+    _log.info(f"{object_id}: done — {len(result)} rows written to {ckpt.name}")
+    return object_id, len(result)
+
+
+# ---------------------------------------------------------------------------
+# Public pipeline entry point
+# ---------------------------------------------------------------------------
+
+def _propagator_fqn(propagator_class: Type[Propagator]) -> str:
+    """Return the fully-qualified class name for pickling across processes."""
+    return f"{propagator_class.__module__}.{propagator_class.__qualname__}"
+
+
+def run_looo_pipeline(
+    mpc_observations: MPCObservations,
+    mpc_orbits: MPCOrbits,
+    propagator_class: Type[Propagator],
+    output_path: Path,
+    config: Optional[LOOOConfig] = None,
+    object_ids: Optional[List[str]] = None,
+    max_processes: Optional[int] = None,
+    propagator_kwargs: Optional[dict] = None,
+    write_interval: int = 50,  # kept for API compatibility, no longer used
+    sigma_model: str = "veres2017",
+) -> LOOOResult:
+    """
+    Run LOOO cross-validation for all (or a subset of) objects, in parallel.
+
+    Each object is processed in its own subprocess.  Results are checkpointed
+    per-object immediately after completion, so a killed run resumes
+    automatically from where it left off.
+
+    Parameters
+    ----------
+    mpc_observations : MPCObservations
+        All observations (grouped by `requested_provid` internally).
+    mpc_orbits : MPCOrbits
+        Reference orbits used as DC starting points.
+    propagator_class : Type[Propagator]
+        Class (not instance) of the propagator to use.
+    output_path : Path
+        Final merged Parquet output path.
+    config : LOOOConfig, optional
+        Eligibility filter configuration.
+    object_ids : list of str, optional
+        Restrict to these object IDs.  Defaults to all objects in
+        mpc_observations.
+    max_processes : int, optional
+        Number of parallel worker processes.  Defaults to CPU count.
+    propagator_kwargs : dict, optional
+        Currently unused (workers instantiate propagators with no args).
+    write_interval : int
+        Ignored (kept for API compatibility).
+
+    Returns
+    -------
+    LOOOResult
+        Full combined result table.
+    """
+    if config is None:
+        config = LOOOConfig()
+    if max_processes is None:
+        max_processes = mp.cpu_count()
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_dir = output_path.parent / "checkpoints"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    # Workers load from disk — write temporary parquet files if inputs aren't
+    # already on disk.  We reuse the existing output_dir for temp files.
+    obs_parquet = str(output_path.parent / "_obs_input.parquet")
+    orbits_parquet = str(output_path.parent / "_orbits_input.parquet")
+    if not Path(obs_parquet).exists():
+        mpc_observations.to_parquet(obs_parquet)
+    if not Path(orbits_parquet).exists():
+        mpc_orbits.to_parquet(orbits_parquet)
+
+    # Determine which objects to process
+    if object_ids is None:
+        object_ids = mpc_observations.requested_provid.unique().to_pylist()
+    object_ids = sorted(set(object_ids))
+
+    # Skip already-checkpointed objects (resume support)
+    completed = _load_completed_ids(checkpoint_dir)
+    remaining = [oid for oid in object_ids if oid not in completed]
+    if completed:
+        logger.info(
+            f"Resuming: {len(completed)} objects already done, "
+            f"{len(remaining)} remaining"
+        )
+    logger.info(
+        f"Processing {len(remaining)} objects with {max_processes} workers"
+    )
+
+    fqn = _propagator_fqn(propagator_class)
+
+    with ProcessPoolExecutor(max_workers=max_processes) as executor:
+        futures = {
+            executor.submit(
+                _worker,
+                oid,
+                obs_parquet,
+                orbits_parquet,
+                fqn,
+                config,
+                str(checkpoint_dir),
+                sigma_model,
+            ): oid
+            for oid in remaining
+        }
+        n_done = len(completed)
+        for future in as_completed(futures):
+            oid = futures[future]
+            try:
+                _, n_rows = future.result()
+                n_done += 1
+                logger.info(
+                    f"[{n_done}/{len(object_ids)}] {oid} — {n_rows} rows"
+                )
+            except Exception as e:
+                logger.error(f"{oid}: worker raised exception: {e}", exc_info=True)
+
+    logger.info("Merging checkpoints into final output...")
+    return merge_checkpoints(checkpoint_dir, output_path)

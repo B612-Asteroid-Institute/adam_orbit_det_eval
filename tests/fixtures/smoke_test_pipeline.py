@@ -18,7 +18,7 @@ from pathlib import Path
 def main() -> None:
     mp.set_start_method("spawn")
 
-    fixture_dir = Path("/app/fixtures/smoke_shard")
+    fixture_dir = Path("/app/fixtures")
     output_dir = Path("/tmp/smoke_output")
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -26,8 +26,8 @@ def main() -> None:
     from mpcq.observations import MPCObservations
     from mpcq.orbits import MPCOrbits
 
-    mpc_obs = MPCObservations.from_parquet(fixture_dir / "mpc_observations.parquet")
-    mpc_orbits = MPCOrbits.from_parquet(fixture_dir / "mpc_orbits.parquet")
+    mpc_obs = MPCObservations.from_parquet(fixture_dir / "smoke_obs.parquet")
+    mpc_orbits = MPCOrbits.from_parquet(fixture_dir / "smoke_orbits.parquet")
     n_objects = len(mpc_obs.requested_provid.unique())
     print(f"Loaded {n_objects} objects, {len(mpc_obs)} observations")
 

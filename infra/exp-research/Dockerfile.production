@@ -1,0 +1,105 @@
+# Production overlay image for MPC-scale real-data LOOO cloud run.
+#
+# Layers workspace adam_core, adam_fo, adam_orbit_det_eval on top of the
+# isolation study base image, builds Find_Orb (binary + ephemerides), and
+# validates with a build-time end-to-end smoke test.
+#
+# The base image (mpc-isolation-study, Debian Trixie, Python 3.11) supplies:
+#   build-essential (GCC 14), ASSIST, google-cloud-storage, all transitive deps.
+# It does NOT include the Find_Orb binary or JPL ephemeris files.
+#
+# Find_Orb's pinned commits have a missing header declaration (bead mxw):
+# ades_out.cpp references get_satellite_offset() which is only forward-declared
+# in mpc_obs.cpp, not in mpc_obs.h. We patch the header before compiling.
+#
+# Build (from workspace root):
+#   docker build -f adam_orbit_det_eval/infra/exp-research/Dockerfile.production \
+#     -t mpc-real-data-looo:v10-local /Users/kathleenkiker/beads_agent_setup
+#
+# Push:
+#   TAG=us-west1-docker.pkg.dev/moeyens-thor-dev/ai/mpc-real-data-looo:pilot-v10-$(date -u +%Y%m%d)
+#   docker tag mpc-real-data-looo:v10-local $TAG
+#   docker push $TAG
+#
+FROM us-west1-docker.pkg.dev/moeyens-thor-dev/ai/mpc-isolation-study:latest-20260409170834
+
+WORKDIR /app
+
+# --- Install build deps for Find_Orb compilation ---
+# Base image has build-essential + GCC 14 but lacks git and wget.
+RUN apt-get update && apt-get install -y --no-install-recommends git wget zlib1g-dev libncurses-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- Build Find_Orb from source ---
+# Pinned commits match adam_fo/src/adam_fo/build_fo.sh for reproducibility.
+# Patch: add missing get_satellite_offset declaration to mpc_obs.h (bead mxw).
+ENV FO_BUILD_DIR=/root/.local/share/adam_fo
+RUN set -ex && mkdir -p $FO_BUILD_DIR && cd $FO_BUILD_DIR && mkdir -p find_orb && cd find_orb \
+    # Clone repos at HEAD — pinned commits in build_fo.sh are mutually
+    # incompatible (find_orb references sat_code symbols not in the pinned
+    # sat_code, e.g. N_SATELL_COORD_ERRORS, get_satellite_offset). HEAD
+    # commits are developed in tandem and compile together.
+    && git clone --depth 1 https://github.com/Bill-Gray/lunar.git \
+    && git clone --depth 1 https://github.com/Bill-Gray/jpl_eph.git \
+    && git clone --depth 1 https://github.com/Bill-Gray/sat_code.git \
+    && git clone --depth 1 https://github.com/Bill-Gray/find_orb.git \
+    && git clone --depth 1 https://github.com/Bill-Gray/miscell.git \
+    # Build in dependency order
+    && cd lunar   && make liblunar.a && make install && cd .. \
+    && cd jpl_eph && make libjpl.a   && make install && cd .. \
+    && cd lunar   && make integrat   && make install && cd .. \
+    && cd sat_code && make sat_id    && make install && cd .. \
+    && cd find_orb && make fo        && make install && cd .. \
+    # Download JPL ephemeris files
+    && mkdir -p $FO_BUILD_DIR/find_orb/.find_orb \
+    && cd $FO_BUILD_DIR/find_orb/.find_orb \
+    && wget -q https://ssd.jpl.nasa.gov/ftp/eph/planets/Linux/de440t/linux_p1550p2650.440t \
+    && wget -qO bc405.dat https://storage.googleapis.com/asteroid-institute-data/ephemeris/bc405.dat
+
+# --- Symlink config dir so fo's default_config_dir_name() finds cospar.txt ---
+# fo probes ~/.find_orb/cospar.txt at startup; adam_fo stores files under
+# $FO_BUILD_DIR/find_orb/.find_orb/ (XDG_DATA_HOME layout).
+RUN ln -s /root/.local/share/adam_fo/find_orb/.find_orb /root/.find_orb
+
+# --- Overlay workspace adam_core (fixes refine_fit ABC mismatch) ---
+COPY adam_core/ /app/adam_core/
+RUN cd /app/adam_core && PDM_BUILD_SCM_VERSION=99.0.0 pip install --no-cache-dir --no-deps .
+
+# --- Reinstall workspace adam_fo WITH deps (registers build-fo, config paths) ---
+COPY adam_fo/ /app/adam_fo/
+RUN cd /app/adam_fo && PDM_BUILD_SCM_VERSION=99.0.0 pip install --no-cache-dir --no-deps .
+
+# --- Overlay workspace adam_orbit_det_eval (all bug fixes) ---
+COPY adam_orbit_det_eval/ /app/adam_orbit_det_eval/
+# Patch: FindOrbOrbitFitter.initial_fit() returns Orbits (not FittedOrbits).
+# evaluate_orbits() handles both types; guard FittedOrbits-only attrs with hasattr.
+RUN sed -i \
+    -e 's/hold_in_orbit\.to_orbits()/hold_in_orbit/' \
+    -e 's/hold_in_orbit\.reduced_chi2\[0\]\.is_valid/hasattr(hold_in_orbit, "reduced_chi2") and hold_in_orbit.reduced_chi2[0].is_valid/' \
+    -e 's/hold_in_orbit\.success\[0\]\.is_valid/hasattr(hold_in_orbit, "success") and hold_in_orbit.success[0].is_valid/' \
+    /app/adam_orbit_det_eval/src/adam_orbit_det_eval/looo/core.py
+RUN cd /app/adam_orbit_det_eval && pip install --no-cache-dir --no-deps .
+
+# --- Import-level smoke tests (fast) ---
+RUN python -c "from adam_fo.find_orb_orbit_fitter import FindOrbOrbitFitter; f = FindOrbOrbitFitter(fo_result_dir='/tmp/fo_smoke'); print('findorb instantiation OK')"
+RUN python -c "from adam_orbit_det_eval.looo.pipeline import run_looo_pipeline; print('pipeline import OK')"
+RUN python -c "from adam_assist import ASSISTPropagator; print('assist import OK')"
+
+# --- Verify Find_Orb artifacts exist ---
+RUN python -c "\
+from adam_fo.config import LINUX_JPL_PATH, BC405_FILENAME, FO_BINARY_DIR; \
+assert LINUX_JPL_PATH.exists(), f'DE440t not found at {LINUX_JPL_PATH}'; \
+assert BC405_FILENAME.exists(), f'bc405.dat not found at {BC405_FILENAME}'; \
+print(f'DE440t: {LINUX_JPL_PATH} ({LINUX_JPL_PATH.stat().st_size / 1e6:.0f} MB)'); \
+print(f'bc405:  {BC405_FILENAME} ({BC405_FILENAME.stat().st_size / 1e6:.0f} MB)'); \
+print('find_orb artifacts OK')"
+
+# --- Build-time E2E smoke test (the gate) ---
+# Runs the full LOOO pipeline on a 2-object fixture and verifies non-empty output.
+# If this fails, the build fails and no image is pushed.
+COPY adam_orbit_det_eval/tests/fixtures/smoke_obs.parquet /app/fixtures/smoke_obs.parquet
+COPY adam_orbit_det_eval/tests/fixtures/smoke_orbits.parquet /app/fixtures/smoke_orbits.parquet
+COPY adam_orbit_det_eval/tests/fixtures/smoke_test_pipeline.py /app/fixtures/smoke_test_pipeline.py
+RUN python /app/fixtures/smoke_test_pipeline.py
+
+ENTRYPOINT ["python", "/app/adam_orbit_det_eval/scripts/12_run_looo_cloud_shard.py"]

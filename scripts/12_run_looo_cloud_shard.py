@@ -164,7 +164,7 @@ def get_propagator_class(name: str):
         raise ValueError(f"Unknown propagator: {name}")
 
 
-def get_orbit_fitter(name: str, fo_result_dir: str, strict: bool = True):
+def get_orbit_fitter(name: str, fo_result_dir: str, strict: bool = True, propagator=None):
     """Build an OrbitFitter instance (or None for scipy DC fallback).
 
     Parameters
@@ -175,13 +175,17 @@ def get_orbit_fitter(name: str, fo_result_dir: str, strict: bool = True):
         Directory for FindOrb intermediate outputs.
     strict : bool
         If True (default), abort when the requested fitter is not importable.
+    propagator : Propagator, optional
+        Propagator instance used by the fitter to evaluate hold-in chi2.
+        Should match the propagator used downstream so chi2 values are
+        consistent.
     """
     if name == "scipy":
         return None
     if name == "findorb":
         try:
             from adam_fo.find_orb_orbit_fitter import FindOrbOrbitFitter
-            return FindOrbOrbitFitter(fo_result_dir=fo_result_dir)
+            return FindOrbOrbitFitter(fo_result_dir=fo_result_dir, propagator=propagator)
         except ImportError as e:
             msg = (
                 f"FindOrbOrbitFitter unavailable ({e}). "
@@ -333,7 +337,12 @@ def main(argv: list[str] | None = None) -> None:
         # --- Configure propagator and orbit fitter ---
         propagator_class = get_propagator_class(args.propagator)
         os.makedirs(args.fo_result_dir, exist_ok=True)
-        orbit_fitter = get_orbit_fitter(args.orbit_fitter, args.fo_result_dir, strict=args.strict_fitter)
+        orbit_fitter = get_orbit_fitter(
+            args.orbit_fitter,
+            args.fo_result_dir,
+            strict=args.strict_fitter,
+            propagator=propagator_class(),
+        )
 
         # --- Configure LOOO pipeline ---
         from adam_orbit_det_eval.looo.core import LOOOConfig

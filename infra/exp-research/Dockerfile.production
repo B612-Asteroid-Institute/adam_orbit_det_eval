@@ -71,13 +71,6 @@ RUN cd /app/adam_fo && PDM_BUILD_SCM_VERSION=99.0.0 pip install --no-cache-dir -
 
 # --- Overlay workspace adam_orbit_det_eval (all bug fixes) ---
 COPY adam_orbit_det_eval/ /app/adam_orbit_det_eval/
-# Patch: FindOrbOrbitFitter.initial_fit() returns Orbits (not FittedOrbits).
-# evaluate_orbits() handles both types; guard FittedOrbits-only attrs with hasattr.
-RUN sed -i \
-    -e 's/hold_in_orbit\.to_orbits()/hold_in_orbit/' \
-    -e 's/hold_in_orbit\.reduced_chi2\[0\]\.is_valid/hasattr(hold_in_orbit, "reduced_chi2") and hold_in_orbit.reduced_chi2[0].is_valid/' \
-    -e 's/hold_in_orbit\.success\[0\]\.is_valid/hasattr(hold_in_orbit, "success") and hold_in_orbit.success[0].is_valid/' \
-    /app/adam_orbit_det_eval/src/adam_orbit_det_eval/looo/core.py
 RUN cd /app/adam_orbit_det_eval && pip install --no-cache-dir --no-deps .
 
 # --- Import-level smoke tests (fast) ---

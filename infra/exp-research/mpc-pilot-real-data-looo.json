@@ -3,7 +3,7 @@
   "namespace": "research",
   "queue": "cpu-ondemand",
   "mode": "indexed",
-  "image": "us-west1-docker.pkg.dev/moeyens-thor-dev/ai/mpc-real-data-looo:pilot-v10-20260423",
+  "image": "us-west1-docker.pkg.dev/moeyens-thor-dev/ai/mpc-real-data-looo:pilot-v11-20260429",
   "resources": {
     "cpu": "6",
     "memory": "24Gi",
@@ -19,13 +19,13 @@
     "max_failed_indexes": 1
   },
   "outputs": {
-    "gcs_prefix": "gs://exp-research/mpc-real-data-looo-pilot"
+    "gcs_prefix": "gs://exp-research/mpc-real-data-looo-pilot-v11"
   },
   "command": [
     "python",
     "/app/adam_orbit_det_eval/scripts/12_run_looo_cloud_shard.py",
     "--gcs-input-prefix", "gs://exp-research/mpc-real-data-looo-pilot/input",
-    "--gcs-output-prefix", "gs://exp-research/mpc-real-data-looo-pilot/output",
+    "--gcs-output-prefix", "gs://exp-research/mpc-real-data-looo-pilot-v11/output",
     "--propagator", "assist",
     "--orbit-fitter", "findorb",
     "--strict-fitter",

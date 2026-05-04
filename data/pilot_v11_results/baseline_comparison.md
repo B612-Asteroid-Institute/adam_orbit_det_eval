@@ -149,11 +149,48 @@ The v11 max is essentially identical to v10. The `hw1` fix made
 the catastrophic-residual numerical issue itself was not addressed by that
 fix.
 
+### Cross-check: reference 3,500-obj raw `looo_results.parquet`
+
+To rule out "the local pipeline has the same tail and we just hadn't
+characterized it," ran the same percentiles on
+`data/looo_results/20260316T190152Z/looo_results.parquet` (the LOOO output
+that produced the reference bias_table):
+
+```
+N rows: 1,211,865
+|residual_RA|   p50=0.151   p90=0.725   p99=  3.821   max=545.503
+|residual_Dec|  p50=0.143   p90=0.666   p99=  2.350   max=201.413
+chi2            p50=0.934   p90=8.309   p99=200.278   max=1.29e+10
+
+|RA|>60":     394 / 1,211,865  = 0.0325%
+|RA|>10":   5,145 / 1,211,865  = 0.4246%
+|RA|< 1": 1,139,745 / 1,211,865 = 94.05%
+```
+
+Pilot v11 vs reference, per-cut ratio:
+
+| cut | reference | pilot v11 | ratio |
+|---|---:|---:|---:|
+| max |RA| | 545.5" | 261,228" | **479×** |
+| p99 |RA| | 3.8" | 28,791" | **~7,500×** |
+| p90 |RA| | 0.73" | 26.2" | **~36×** |
+| % rows >60" | 0.0325% | 8.82% | **~270×** |
+| max chi² | 1.3e10 | 6.6e16 | **~5,000,000×** |
+
+This is overwhelming evidence that the cloud worker's per-object hold-in fits
+are pathological at a rate the local pipeline does not produce. The tail is
+not a numerical inevitability of the LOOO method — it is a cloud-only
+anomaly. (The local pipeline does have a thin tail of its own — 394 rows
+>60" out of 1.2M — but it's three orders of magnitude rarer per row and two
+orders of magnitude smaller in maximum.)
+
 Important: the bias-table builder's `max_chi2=100` and `max_object_chi2=50`
 filters cleanly excise the catastrophic tail before bootstrap (44,236 → 41,699
 → 30,246 rows used in the bootstrap). So the bias values reported above are
 **not contaminated by the tail**. The downstream pipeline does the right
-thing. But by the literal exit criterion, this run trips the regression flag.
+thing. But the rate of bad fits is a real regression in the cloud per-object
+pipeline that needs an independent investigation — see the child bead
+spawned from ojo.1.
 
 ## Verdict — ojo NOT closed
 
@@ -178,22 +215,146 @@ What does work:
 - Bias values are not contaminated by the catastrophic tail —
   `max_object_chi2≤50` excises it correctly during bootstrap.
 
-## Recommendations to coordinator
+## Tail diagnosis (root cause, by experiment)
 
-Per bead's standing instructions ("If anchors disagree badly: do not close.
-Report findings, file a child bead under ojo describing the disagreement, and
-stop. Do not rebuild images or rerun the pilot — that's a coordinator
-decision."), the next steps are coordinator decisions:
+### Hypothesis ranking
 
-1. Decide whether the catastrophic residual tail (max |RA| ≈ 261,000") is a
-   regression to address before the full cloud run, or an acceptable
-   downstream-filtered artifact of the LOOO+evaluate_orbits path.
-2. Decide whether to re-pilot on the actual 3,500-object input set
-   (`data/looo_sample_3500/`) so the baseline-correctness comparison is
-   well-posed (current pilot input was apparently sourced differently and
-   produces a mostly-disjoint object set).
-3. Either way, file a child bead documenting (1)+(2) and what evidence would
-   be sufficient to close ojo.
+| # | Hypothesis | Evidence verdict |
+|---|---|---|
+| 1 | **FindOrb cold-start under-determined-fit divergence** (the cloud worker uses `--orbit-fitter findorb` by default; the reference predates the orbit_fitter knob and used scipy `fit_least_squares` warm-started with the MPC seed orbit) | **STRONG — primary cause** |
+| 2 | **MPCORB.DAT missing in the v11 image** (FindOrb has known-orbit lookup via `get_orbit_from_mpcorb_sof()` but no catalog file to read) | SUPPORTING — explains the long-arc dense well-known-asteroid 100%-catastrophic cluster |
+| 3 | **Propagator / ephemeris / time-scale / leap-second mismatch** | RULED OUT |
+| 4 | **Rejected-obs handling (bead 589)** | MINOR — possibly contributes to the 37-vs-40 held-out-row delta on `2020 ML22`, but does not explain the chi² magnitudes |
+
+### Witnesses and the decisive 4-way comparison
+
+Three witnesses picked from `data/pilot_v11_results/merged_looo_results.parquet`
+that (a) appear in `data/looo_sample_3500/mpc_observations.parquet` (pilot ∩
+reference) and (b) have at least one pilot held-out row with |residual_RA| > 10,000".
+Top three by max|RA|:
+
+- **2020 ML22** — max|RA|_pilot = 261,228" (40 obs total, 11–32 held-in obs, 17.9–3770 day held-in arc range, dominant station F51)
+- **2014 NH86** — max|RA|_pilot = 139,227" (40 obs total, 8–32 held-in, 31–4066 d, dominant F51)
+- **2020 TP96** — max|RA|_pilot = 109,363" (26 obs total, 7–19 held-in, 16–2693 d, dominant F51)
+
+In all three, residual |RA| is Spearman-correlated **−0.7** with `arc_remaining_days`
+and `n_obs_remaining`, and **+0.7** with `|delta_q_au|`: the catastrophic rows
+are exactly the holdouts that leave a **short held-in arc with few obs** (the
+F51 holdouts, since F51 is the dominant station). Pilot's |Δq| in these cases is
+**0.07–0.09 AU** — a giant orbital-element drift — vs reference's `1e−8 to 1e−4 AU`.
+That's 6–7 orders of magnitude difference. The orbit *itself* is wrong, not the
+propagation of it.
+
+Decisive comparison, same observations across all four runs (chi²/obs for
+the F51 holdout — the worst case in each witness):
+
+| Witness / holdout | Reference (`20260316T190152Z`, scipy implicit, MPC seed warm-start) | Local scipy today (`fit_least_squares`, MPC seed warm-start, `adam_fo 6cfec10`, ASSIST) | Local FindOrb today (`--orbit-fitter findorb`, cold-start, same `adam_fo 6cfec10`, same ASSIST) | Pilot v11 cloud (FindOrb cold-start, image `pilot-v11-20260429`) |
+|---|---:|---:|---:|---:|
+| 2014 NH86 / F51 | max\|RA\|=0.37" | chi²/obs = **1.66** | chi²/obs = **2.36e+11** | catastrophic (max\|RA\| = 139,227") |
+| 2020 ML22 / F51 | max\|RA\|=159" | chi²/obs = **227,086** | chi²/obs = **8.86e+11** | catastrophic (max\|RA\| = 261,228") |
+| 2020 TP96 / F51 | max\|RA\|=110" | chi²/obs = **80,227** | chi²/obs = **1.29e+11** | catastrophic (max\|RA\| = 109,363") |
+
+Conclusion: **local post-hw1 FindOrb on these observations reproduces the
+cloud catastrophe** to within an order of magnitude on chi². Local scipy
+warm-started with the MPC seed orbit produces fits 6–11 orders of magnitude
+better than FindOrb cold-start *on the same observations, in the same
+environment, with the same propagator*. The bug is not cloud-specific.
+
+(Local scipy is moderately worse than the reference run on `2020 ML22` and
+`2020 TP96` — chi² of 227k and 80k vs reference's ~1e5 / ~10 — but in the same
+order, not the 6–11 orders that separate FindOrb from scipy. Some smaller
+secondary regression between Mar 16 and today, presumably in ASSIST or
+sigma-model defaults, is worth documenting separately but does not explain the
+catastrophic tail.)
+
+### Property clustering on the broader catastrophic set (2,875 rows of 44,236)
+
+| | catastrophic-rate |
+|---|---|
+| arc_remaining 7–30 d | 21.2% |
+| arc_remaining 30–90 d | 5.6% |
+| arc_remaining 1–3 yr | 4.9% |
+| arc_remaining 10y+ | 8.2% (and **88%** of all catastrophic rows live here, on long-arc dense well-known objects) |
+| n_obs_remaining 5–10 | 37.7% |
+| n_obs_remaining 100+ | 41.4% (long-arc dense) |
+| station T08 / T05 / M22 / W68 / R17 | **100%** catastrophic on every row |
+| station 704 | 96%; station P07 | 97% |
+| station F51 / G96 (heavy stations) | 1–2% |
+
+Two distinct catastrophic clusters consistent with hypothesis 1 + 2:
+
+- **Short-arc, under-determined fits** (Cluster B): 5–30 day held-in arcs, 5–10
+  obs. FindOrb cold-starts via Gauss/Vaisala on an under-determined geometry,
+  lands in the wrong basin, returns a wildly wrong orbit. Witnesses 2014 NH86 / 2020 ML22 / 2020 TP96 sit here.
+- **Long-arc dense, all-rows catastrophic** (Cluster A): well-observed
+  asteroids (3,000+ obs over 30+ years: `1981 QE2`, `1995 UX`, `1999 CJ16`,
+  `2001 DD22`). Every fit is broken — `hold_in_reduced_chi2` itself is huge
+  (median 4.7e9 on catastrophic rows). FindOrb cannot converge from a generic
+  initial guess on thousands of obs over decades; the absent `MPCORB.DAT`
+  means there is no known-orbit warm-start to get it close.
+
+Stations hitting 100% catastrophic rates (T08, T05, M22, W68, R17) all happen
+to be involved in holdouts on the long-arc dense cluster, where every fit
+fails regardless of which station is held out.
+
+### Environment diff (pilot v11 image vs local)
+
+| | v11 image (`pilot-v11-20260429`) | local workspace |
+|---|---|---|
+| Python | 3.11.15 | 3.12 |
+| `erfa` | 2.0.1.5 | (unchecked, not the bug) |
+| `astropy` | 7.2.0 | (unchecked) |
+| Leap seconds expiry | 2026-12-28 (current) | (current) |
+| DE440 ephemeris | `/usr/local/lib/python3.11/site-packages/naif_de440/de440.bsp` | same package present in `.venv` |
+| DE441 small-bodies n16 | `/usr/local/.../jpl_small_bodies_de441_n16/sb441-n16.bsp` | present in `.venv` |
+| Find_Orb commit | `294bd5d` | same (built locally Feb 24) |
+| `adam_fo` (installed) | post-hw1 (has `evaluate_orbits` + `_TwoBodyPropagator` + `success=True`) | same (`6cfec10`) |
+| `adam_orbit_det_eval` | post-hw1 (`62c351e`, bandaid removed, propagator threaded into FindOrbOrbitFitter) | same |
+| **`MPCORB.DAT` / `mpcorb.sof`** | **ABSENT** (only `mpcorb.hdr`, the format-doc header, is shipped) | **ABSENT** (same — local FindOrb also can't warm-start from a catalog) |
+
+The environment diff is essentially null. The relevant difference is purely
+methodological: which fitter is configured by default for the LOOO pipeline.
+
+### Notes on the briefing's coordinator hint
+
+The coordinator's earlier message said "post-hw1 adam_fo at commit 6cfec10"
+and "pre-hw1 adam_fo (commit c80bc5a)". The `c80bc5a` reference is correct
+(parent of the merge `e9e4d2d`). `6cfec10` exists only in the local workspace
+`adam_fo` and is the post-hw1 commit; the v11 image has it installed
+(`/usr/local/lib/python3.11/site-packages/adam_fo/find_orb_orbit_fitter.py`)
+even though `/app/sources/adam_fo/.git` only knows up to `e9e4d2d` (the image
+build vendors the post-hw1 source under `/app/adam_fo` and pip-installs from
+there). I initially misread this and thought the image was missing the hw1
+fix; that was wrong, retracted, and corrected here.
+
+### What this means for ojo
+
+The catastrophic tail is **not a regression to chase in the cloud worker**.
+It is the (intended-as-default-but-perhaps-not-fully-vetted) consequence of
+switching from scipy `fit_least_squares` warm-started with the MPC seed
+orbit to FindOrb cold-started from observations alone. The change happened
+between the reference run (Mar 16) and the orbit-fitter knob landing
+(`scripts/12_run_looo_cloud_shard.py:39 default="findorb"`).
+
+Coordinator decisions that follow from this diagnosis:
+
+1. Either change the cloud-worker default back to `--orbit-fitter scipy`
+   for a baseline-correctness comparison run, or
+2. Ship `MPCORB.DAT` (or equivalent `mpcorb.sof` packed orbit catalog) into
+   the production image and verify FindOrb actually consults it for
+   warm-starts, or
+3. Modify the `OrbitFitter` interface to accept a warm-start `reference_orbit`
+   argument and pass it through (the `OrbitFitter` ABC and `initial_fit()`
+   signature in `adam_fo/find_orb_orbit_fitter.py:230-234` currently take only
+   `(object_id, observations)`).
+
+None of those are in scope for ojo or this diagnostic.
+
+A separate, smaller item worth filing: local scipy today gives ~10–100×
+worse chi² than the Mar 16 reference on `2020 ML22` / `2020 TP96` (sub-orders-of-magnitude,
+not the FindOrb gap). Likely a `fit_least_squares` / ASSIST / sigma-model
+default change between Mar and Apr 2026. Only worth chasing once the FindOrb
+issue is resolved.
 
 ## Artifacts
 

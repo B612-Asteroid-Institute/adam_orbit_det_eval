@@ -74,11 +74,12 @@ def test_orbit_fitter_picklable():
 
 
 def test_orbit_fitter_initial_fit_called():
-    """When an orbit_fitter is provided, run_looo_for_object must call initial_fit."""
+    """When an orbit_fitter is provided, run_looo_for_object must call initial_fit
+    AND must thread the reference_orbit warm-start seed into the call.
+    """
     from unittest.mock import MagicMock, patch
 
     import numpy as np
-    import pyarrow as pa
 
     from adam_core.orbit_determination.evaluate import OrbitDeterminationObservations
     from adam_core.orbit_determination.fitted_orbits import FittedOrbits
@@ -131,4 +132,31 @@ def test_orbit_fitter_initial_fit_called():
     # initial_fit should have been called (once per unique station)
     assert mock_fitter.initial_fit.called, (
         "orbit_fitter.initial_fit was never called — fitter plumbing is broken"
+    )
+
+    # Every call must thread the reference_orbit seed; otherwise the ABC path
+    # silently cold-bootstraps and LOOO loses its MPC warm-start.
+    for call in mock_fitter.initial_fit.call_args_list:
+        assert call.kwargs.get("reference_orbit") is mock_orbit, (
+            "orbit_fitter.initial_fit was called without reference_orbit kwarg — "
+            "warm-start seed is not being plumbed through the ABC path"
+        )
+
+
+def test_orbit_fitter_abc_accepts_reference_orbit_kwarg():
+    """The OrbitFitter ABC must accept ``reference_orbit`` as an optional kwarg
+    on ``initial_fit``. This guards the contract that LOOO and any future
+    backend (NativeOrbitFitter, FindOrbOrbitFitter, etc.) rely on for
+    warm-start plumbing.
+    """
+    import inspect
+
+    from adam_core.orbit_determination.orbit_fitter import OrbitFitter
+
+    sig = inspect.signature(OrbitFitter.initial_fit)
+    assert "reference_orbit" in sig.parameters, (
+        "OrbitFitter.initial_fit must accept reference_orbit"
+    )
+    assert sig.parameters["reference_orbit"].default is None, (
+        "reference_orbit must default to None for backward compatibility"
     )

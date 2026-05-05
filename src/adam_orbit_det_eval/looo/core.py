@@ -272,6 +272,7 @@ def run_looo_for_object(
                 hold_in_orbit, hold_in_members = orbit_fitter.initial_fit(
                     object_id,
                     hold_in_obs,
+                    reference_orbit=reference_orbit,
                 )
             else:
                 hold_in_orbit, hold_in_members = fit_least_squares(

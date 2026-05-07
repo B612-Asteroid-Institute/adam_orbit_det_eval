@@ -5,7 +5,7 @@
 groups = ["default", "test"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:045cb8bdd7158839e20bba9e57b35e0fe724c3e9ea675024659fdae6aeadaaf5"
+content_hash = "sha256:5b97b3622b496a9e0290facf2c2175f222ab6036bc7bad2e188daeeaf06801a1"
 
 [[metadata.targets]]
 requires_python = ">=3.11,<3.13"
@@ -36,6 +36,9 @@ files = [
 name = "adam-core"
 version = "0.5.5"
 requires_python = "<3.14,>=3.11"
+git = "https://github.com/B612-Asteroid-Institute/adam_core.git"
+ref = "21f49964"
+revision = "21f49964f4349fac79b95629e68840ef4a1920fc"
 summary = "Core libraries for the ADAM platform"
 groups = ["default"]
 dependencies = [
@@ -65,23 +68,18 @@ dependencies = [
     "spiceypy",
     "timezonefinder",
 ]
-files = [
-    {file = "adam_core-0.5.5-py3-none-any.whl", hash = "sha256:fe6ca7c9533539760f7318032eb21259b90144ed1cb23c81cd228fbaf51c212f"},
-    {file = "adam_core-0.5.5.tar.gz", hash = "sha256:ca80ff537be595efc46fa951be101fc39e022158ccd8bbe8f4db7c05fcb61bd9"},
-]
 
 [[package]]
 name = "adam-fo"
 version = "0.0.2"
 requires_python = "<3.13,>=3.11"
+git = "https://github.com/B612-Asteroid-Institute/adam_fo.git"
+ref = "abf4c97"
+revision = "abf4c975ce45e884e77c07bed86b037a4cac68ea"
 summary = "Wrapper for Bill Gray's fo, the programmatic version of find_orb"
 groups = ["default"]
 dependencies = [
     "adam-core>=0.3.6",
-]
-files = [
-    {file = "adam_fo-0.0.2-py3-none-any.whl", hash = "sha256:e29a0d14b098cdd6e1d3969b41d0ac2162950fb44e90f8a40725d4c05c32c01d"},
-    {file = "adam_fo-0.0.2.tar.gz", hash = "sha256:80a8a853c5284e76435294b0bd1dc5487502fe2a3ab727341538e91520653dd4"},
 ]
 
 [[package]]

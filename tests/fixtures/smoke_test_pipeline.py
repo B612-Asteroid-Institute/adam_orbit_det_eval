@@ -6,6 +6,12 @@ Exercises the same code path as 12_run_looo_cloud_shard.py without GCS:
   load fixture -> configure propagator/fitter -> run_looo_pipeline -> analysis
 
 Exits non-zero if the pipeline produces zero result rows or analysis crashes.
+
+Witness gate (bead dez): the fixture includes 1981 QE2 (long-arc dense, 100%
+catastrophic in pilot v11) and 2020 ML22 (short-arc, max|RA|=261k arcsec in
+v11). Without the seed-warm-start fix in adam_fo (bead 9sg) plumbed through
+the LOOO call site (bead e48), 1981 QE2 fits diverge to chi2 ~ 1e9. The
+witness assertions catch that regression at build time.
 """
 from __future__ import annotations
 
@@ -13,6 +19,8 @@ import multiprocessing as mp
 import os
 import sys
 from pathlib import Path
+
+WITNESS_OBJECT_IDS = ["1981 QE2", "2020 ML22"]
 
 
 def main() -> None:
@@ -65,51 +73,87 @@ def main() -> None:
         print("FAIL: pipeline produced zero result rows")
         sys.exit(1)
 
-    # -- Column-population gates (regression for hw1) --
-    # Pilot v10 silently produced all-null hold_in_reduced_chi2 / hold_in_fit_success.
-    # Without these gates the smoke test passes on broken data.
-    import pyarrow.compute as pc
     import numpy as np
+    import pyarrow.compute as pc
 
-    nn_chi2 = pc.sum(
-        pc.cast(pc.is_valid(results.hold_in_reduced_chi2), "int64")
-    ).as_py() or 0
-    nn_succ = pc.sum(
-        pc.cast(pc.is_valid(results.hold_in_fit_success), "int64")
-    ).as_py() or 0
-    chi2_frac = nn_chi2 / n_rows
-    succ_frac = nn_succ / n_rows
-    print(
-        f"Non-null hold_in_reduced_chi2: {nn_chi2}/{n_rows} ({chi2_frac:.1%})"
-    )
-    print(
-        f"Non-null hold_in_fit_success:  {nn_succ}/{n_rows} ({succ_frac:.1%})"
-    )
-
-    if chi2_frac < 0.5:
+    # -- Global regression: hold_in_reduced_chi2 must never be null (bead hw1) --
+    # Pilot v10 silently produced all-null hold_in_reduced_chi2; the existing
+    # non-null-fraction check let half-broken results through. Tighten to "any
+    # null fails" so the hold-in metrics column is fully populated.
+    object_id_col = results.object_id.to_pylist()
+    chi2_valid = pc.is_valid(results.hold_in_reduced_chi2).to_pylist()
+    null_chi2_rows = [
+        oid for oid, valid in zip(object_id_col, chi2_valid) if not valid
+    ]
+    if null_chi2_rows:
         print(
-            f"FAIL: hold_in_reduced_chi2 non-null fraction {chi2_frac:.1%} < 50% "
-            f"(regression: hold-in fit metrics not flowing through)"
-        )
-        sys.exit(1)
-    if succ_frac < 0.5:
-        print(
-            f"FAIL: hold_in_fit_success non-null fraction {succ_frac:.1%} < 50% "
-            f"(regression: hold-in fit metrics not flowing through)"
+            f"FAIL: hold_in_reduced_chi2 is null on {len(null_chi2_rows)} rows "
+            f"(regression on bead hw1 — hold-in fit metrics not flowing through). "
+            f"Affected object_ids: {sorted(set(null_chi2_rows))[:5]}"
         )
         sys.exit(1)
 
-    # Residual sanity: catastrophic divergence would yield arcseconds of
-    # tens of thousands. Cap at 60 arcsec on this fixture.
-    max_abs_ra = float(
-        np.nanmax(np.abs(results.residual_ra_arcsec.to_numpy(zero_copy_only=False)))
-    )
-    print(f"max(|residual_ra_arcsec|): {max_abs_ra:.2f} arcsec")
-    if not np.isfinite(max_abs_ra) or max_abs_ra >= 60.0:
-        print(
-            f"FAIL: max(|residual_ra_arcsec|) = {max_abs_ra} arcsec "
-            f"(fits diverging — chi2 column would be junk at scale)"
+    # -- Per-witness gate (bead dez seed-warm-start regression check) --
+    # If reference_orbit isn't reaching FindOrb at fit time, hold-in fits
+    # diverge from the MPC seed. On 1981 QE2 (3,291 obs, 53 stations) this
+    # produced median chi2 ~ 4.7e9 and arcsecond residuals in the 10^5 range
+    # in pilot v11. With the warm-start fix, fits refine around the seed and
+    # both residuals and chi2 are sane.
+    chi2 = results.hold_in_reduced_chi2.to_numpy(zero_copy_only=False)
+    ra_arcsec = results.residual_ra_arcsec.to_numpy(zero_copy_only=False)
+    success = results.hold_in_fit_success.to_pylist()
+    success_valid = pc.is_valid(results.hold_in_fit_success).to_pylist()
+
+    failures: list[str] = []
+    for witness in WITNESS_OBJECT_IDS:
+        idx = [i for i, oid in enumerate(object_id_col) if oid == witness]
+        if not idx:
+            failures.append(
+                f"{witness}: 0 result rows (witness not exercised — fixture or "
+                f"eligibility filter regression)"
+            )
+            continue
+
+        w_chi2 = chi2[idx]
+        w_ra = ra_arcsec[idx]
+        w_success = [success[i] for i in idx]
+        w_success_valid = [success_valid[i] for i in idx]
+
+        max_abs_ra = float(np.nanmax(np.abs(w_ra))) if len(w_ra) else float("nan")
+        catastrophic_chi2 = int(np.sum(w_chi2 > 100.0))
+        catastrophic_frac = catastrophic_chi2 / len(w_chi2)
+        bad_success = sum(
+            1
+            for v, ok in zip(w_success_valid, w_success)
+            if (not v) or (ok is False)
         )
+
+        print(
+            f"{witness}: {len(idx)} rows, max|residual_ra|={max_abs_ra:.2f}\", "
+            f"chi2>100 on {catastrophic_chi2}/{len(w_chi2)} "
+            f"({catastrophic_frac:.0%}), bad_success={bad_success}"
+        )
+
+        if not np.isfinite(max_abs_ra) or max_abs_ra > 60.0:
+            failures.append(
+                f"{witness}: max|residual_ra_arcsec|={max_abs_ra} > 60 "
+                f"(seed warm-start regression — fits diverging from MPC seed)"
+            )
+        if catastrophic_frac > 0.5:
+            failures.append(
+                f"{witness}: hold_in_reduced_chi2 > 100 on "
+                f"{catastrophic_frac:.0%} of rows (catastrophic regime)"
+            )
+        if bad_success:
+            failures.append(
+                f"{witness}: hold_in_fit_success null-or-False on {bad_success} "
+                f"rows (FindOrb fit failures)"
+            )
+
+    if failures:
+        print("FAIL: witness gate(s) tripped:")
+        for f in failures:
+            print(f"  - {f}")
         sys.exit(1)
 
     # -- Run analysis (same path as 12_run_looo_cloud_shard.py) --

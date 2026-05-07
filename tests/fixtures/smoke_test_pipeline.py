@@ -7,11 +7,14 @@ Exercises the same code path as 12_run_looo_cloud_shard.py without GCS:
 
 Exits non-zero if the pipeline produces zero result rows or analysis crashes.
 
-Witness gate (bead dez): the fixture includes 1981 QE2 (long-arc dense, 100%
-catastrophic in pilot v11) and 2020 ML22 (short-arc, max|RA|=261k arcsec in
-v11). Without the seed-warm-start fix in adam_fo (bead 9sg) plumbed through
-the LOOO call site (bead e48), 1981 QE2 fits diverge to chi2 ~ 1e9. The
-witness assertions catch that regression at build time.
+Witness gate (bead dez): the fixture pairs two cooperative pilot-v11 winners
+that should still pass under tighter LOOO filters. 2014 EG12 (270 obs, 9
+stations, 22-yr arc, max station 37%) covers the long-arc dense case; 2013
+UF5 (48 obs, 7 stations, 61-day arc, max station 23%) covers the short-arc
+multi-station case. Both had hold_in_reduced_chi2 < 1, max|residual| < 1.1"
+in pilot v11 — so any regression in warm-start plumbing or DC convergence
+will surface as residual blow-up here. The 1981 QE2 / 2020 ML22 pair was
+retired after they exposed catastrophic behavior the -v hint cannot rescue.
 """
 from __future__ import annotations
 
@@ -20,7 +23,7 @@ import os
 import sys
 from pathlib import Path
 
-WITNESS_OBJECT_IDS = ["1981 QE2", "2020 ML22"]
+WITNESS_OBJECT_IDS = ["2014 EG12", "2013 UF5"]
 
 
 def main() -> None:

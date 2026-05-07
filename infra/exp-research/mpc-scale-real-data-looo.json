@@ -3,7 +3,7 @@
   "namespace": "research-kat",
   "queue": "cpu-spot",
   "mode": "indexed",
-  "image": "us-west1-docker.pkg.dev/moeyens-thor-dev/ai/mpc-real-data-looo:full-20260420",
+  "image": "us-west1-docker.pkg.dev/moeyens-thor-dev/ai/mpc-real-data-looo:pilot-v12-20260507",
   "resources": {
     "cpu": "16",
     "memory": "32Gi",

@@ -62,12 +62,12 @@ class LOOOConfig:
     #: Minimum number of observations for an observatory to be tested
     min_obs_held_out: int = 1
     #: Minimum number of remaining observations after hold-out
-    min_obs_remaining: int = 6
+    min_obs_remaining: int = 10
     #: Minimum arc length (days) that must remain after hold-out
     min_arc_length_days: float = 7.0
     #: Maximum fraction of total observations that may be held out
     #: (avoids underdetermined hold-in fits)
-    max_held_out_fraction: float = 0.8
+    max_held_out_fraction: float = 0.5
     #: scipy.optimize.least_squares kwargs for the DC step
     ls_kwargs: dict = None
 

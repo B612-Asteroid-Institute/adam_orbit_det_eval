@@ -5,8 +5,8 @@
   "mode": "indexed",
   "image": "us-west1-docker.pkg.dev/moeyens-thor-dev/ai/mpc-real-data-looo:pilot-v12-20260507",
   "resources": {
-    "cpu": "16",
-    "memory": "32Gi",
+    "cpu": "7",
+    "memory": "24Gi",
     "gpu": 0
   },
   "job": {
@@ -29,6 +29,6 @@
     "--propagator", "assist",
     "--orbit-fitter", "findorb",
     "--strict-fitter",
-    "--max-processes", "14"
+    "--max-processes", "5"
   ]
 }

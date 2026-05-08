@@ -155,6 +155,10 @@ def _filter_results(
             pc.less_equal(results.held_out_fraction, max_held_out_fraction),
         )
     if max_hold_in_reduced_chi2 is not None:
+        # NOTE: nulls→False here means a parquet with all-null hold_in_reduced_chi2
+        # (the v11 cloud regression) drops every row. For aggregation pipelines
+        # use looo.bias_filter.apply_bias_filter (bead 7bt), which handles the
+        # null case explicitly and adds orbit-drift + per-station MAD tiers.
         valid_chi2 = pc.fill_null(
             pc.and_(
                 pc.is_valid(results.hold_in_reduced_chi2),

@@ -16,7 +16,7 @@
   },
   "retry": {
     "backoff_limit_per_index": 2,
-    "max_failed_indexes": 20
+    "max_failed_indexes": 2
   },
   "outputs": {
     "gcs_prefix": "gs://exp-research/mpc-real-data-looo"

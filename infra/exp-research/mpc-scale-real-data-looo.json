@@ -6,7 +6,7 @@
   "image": "us-west1-docker.pkg.dev/moeyens-thor-dev/ai/mpc-real-data-looo:pilot-v12-20260507",
   "resources": {
     "cpu": "7",
-    "memory": "24Gi",
+    "memory": "16Gi",
     "gpu": 0
   },
   "job": {

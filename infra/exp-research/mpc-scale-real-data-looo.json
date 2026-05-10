@@ -11,7 +11,7 @@
   },
   "job": {
     "completions": 19,
-    "parallelism": 24,
+    "parallelism": 14,
     "ttl_seconds_after_finished": 172800
   },
   "retry": {
@@ -19,13 +19,13 @@
     "max_failed_indexes": 4
   },
   "outputs": {
-    "gcs_prefix": "gs://exp-research/mpc-real-data-looo"
+    "gcs_prefix": "gs://exp-research/mpc-real-data-looo-20260509"
   },
   "command": [
     "python",
     "/app/adam_orbit_det_eval/scripts/12_run_looo_cloud_shard.py",
     "--gcs-input-prefix", "gs://exp-research/mpc-real-data-looo/input",
-    "--gcs-output-prefix", "gs://exp-research/mpc-real-data-looo/output",
+    "--gcs-output-prefix", "gs://exp-research/mpc-real-data-looo-20260509/output",
     "--propagator", "assist",
     "--orbit-fitter", "findorb",
     "--strict-fitter",

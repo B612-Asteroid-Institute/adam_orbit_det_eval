@@ -161,6 +161,14 @@ obs_stats AS (
         COUNT(DISTINCT obs.stn) AS n_distinct_stns
     FROM `{project}.{dataset_id}.public_obs_sbn` AS obs
     INNER JOIN candidates AS c ON obs.provid = c.provid
+    -- Exclude ITF (Isolated Tracklet File) candidates: status='I' rows are
+    -- MPC tentative linkages, not confirmed attributions. They can be
+    -- mis-linked across objects with similar Dec but very different RA and
+    -- produce catastrophic LOOO residuals (e.g. 363,671" RA on
+    -- 2016 AU8 × D37 in pilot v12 run 20260510). Filter at eligibility
+    -- counting; the post-fetch drop in write_shard removes them from the
+    -- shard parquets themselves.
+    WHERE obs.status != 'I'
     GROUP BY obs.provid
     HAVING COUNT(DISTINCT obs.stn) >= {min_observatories}
 )
@@ -218,6 +226,18 @@ def write_shard(
         )
         obs_chunks.append(client.query_observations(batch))
     all_obs = qv.concatenate(obs_chunks)
+
+    # Drop ITF candidate rows (status='I') that slipped past the BQ candidate
+    # query. mpcq's query_observations returns all rows for each provid
+    # regardless of status, so the post-fetch filter is what actually keeps
+    # ITF tracklets out of the per-shard parquets.
+    if "status" in all_obs.table.schema.names:
+        import pyarrow.compute as _pc
+        keep_mask = _pc.not_equal(all_obs.table.column("status"), "I")
+        n_itf = len(all_obs) - int(_pc.sum(_pc.cast(keep_mask, "int64")).as_py() or 0)
+        if n_itf > 0:
+            logger.info(f"  Shard {shard_idx:03d}: dropping {n_itf} ITF (status='I') rows")
+            all_obs = all_obs.apply_mask(keep_mask)
 
     # Fetch orbits in batches
     orbit_chunks = []

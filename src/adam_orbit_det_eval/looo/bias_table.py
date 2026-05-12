@@ -32,20 +32,36 @@ One row per (observatory) and one row per (observatory, program_code) with:
 
   obs_code, program_code       # program_code null for observatory-level rows
   n_objects, n_obs
+  # Mean bias (point estimate = simple object-weighted mean)
   bias_ra_arcsec, bias_dec_arcsec, bias_at_arcsec, bias_ct_arcsec
-  bias_ra_ci_low, bias_ra_ci_high      # 2.5 / 97.5 percentile
+  bias_ra_ci_low, bias_ra_ci_high      # 2.5 / 97.5 percentile bootstrap
   bias_dec_ci_low, bias_dec_ci_high
   bias_at_ci_low, bias_at_ci_high
   bias_ct_ci_low, bias_ct_ci_high
+  # Median bias (point estimate = median of per-object means)
+  bias_ra_median_arcsec, bias_dec_median_arcsec,
+  bias_at_median_arcsec, bias_ct_median_arcsec
+  bias_ra_median_ci_low, bias_ra_median_ci_high
+  bias_dec_median_ci_low, bias_dec_median_ci_high
+  bias_at_median_ci_low, bias_at_median_ci_high
+  bias_ct_median_ci_low, bias_ct_median_ci_high
+  # RMS scatter (point estimate + bootstrap CI)
   rms_ra_arcsec, rms_dec_arcsec, rms_at_arcsec, rms_ct_arcsec
+  rms_ra_ci_low, rms_ra_ci_high
+  rms_dec_ci_low, rms_dec_ci_high
+  rms_at_ci_low, rms_at_ci_high
+  rms_ct_ci_low, rms_ct_ci_high
   sem_ra_arcsec, sem_dec_arcsec, sem_at_arcsec, sem_ct_arcsec
   chi2_per_obs
+  # True when the 95% CI on mean bias_ra OR bias_dec excludes zero — i.e.
+  # the station shows a statistically resolvable bias in at least one axis.
+  bias_significant
   sigma_model_source            # fraction of obs with empirical rmsra/rmsdec
   obs_epoch_start, obs_epoch_end  # MJD (TAI/UTC whatever LOOO used)
 
 AT/CT columns are NaN when the input does not contain `residual_at_arcsec`
-and `residual_ct_arcsec` (e.g. the 3,500-object real-data parquet, which
-pre-dates the AT/CT augmentation).
+and `residual_ct_arcsec` (e.g. the 3,500-object real-data parquet and the
+2026-05-10 MPC-scale parquet, which pre-date the AT/CT augmentation).
 
 Provenance columns (`sigma_model_source`, `obs_epoch_*`) are NaN when the
 caller does not provide the source observations DataFrame.
@@ -157,6 +173,92 @@ def bootstrap_mean_ci(
     return lo, hi
 
 
+def bootstrap_stats_ci(
+    per_object_values: np.ndarray,
+    per_object_rms: Optional[np.ndarray],
+    config: BootstrapConfig,
+    rng: np.random.Generator,
+) -> Dict[str, Tuple[float, float]]:
+    """
+    Compute bootstrap 95% CIs for mean, median, and (object-weighted) RMS
+    using a single shared set of resample indices.
+
+    Resamples objects with replacement. Each resample gives (mean, median,
+    mean-of-per-object-rms) so the three CIs come from a consistent set
+    of bootstrap draws.
+
+    Parameters
+    ----------
+    per_object_values : ndarray of float64, shape (n_objects,)
+        Per-object mean residuals (signed).
+    per_object_rms : ndarray of float64, shape (n_objects,) or None
+        Per-object RMS values (sqrt of per-object mean-square residual).
+        When None, the RMS CI returned is (nan, nan).
+    config : BootstrapConfig
+    rng : numpy Generator
+
+    Returns
+    -------
+    Dict with keys ``mean_lo``/``mean_hi``, ``median_lo``/``median_hi``,
+    ``rms_lo``/``rms_hi``. Any key may be NaN when there is insufficient
+    finite input data.
+    """
+    nan_pair = (float("nan"), float("nan"))
+    out_keys = ("mean", "median", "rms")
+    nan_out = {f"{k}_lo": float("nan") for k in out_keys}
+    nan_out.update({f"{k}_hi": float("nan") for k in out_keys})
+
+    n = per_object_values.size
+    if n == 0 or np.all(~np.isfinite(per_object_values)):
+        return nan_out
+
+    has_rms = per_object_rms is not None and per_object_rms.size == n
+
+    cells_per_iter = n
+    chunk_size = max(1, min(
+        config.n_resamples,
+        config.max_cells_per_chunk // max(cells_per_iter, 1),
+    ))
+
+    mean_boot = np.empty(config.n_resamples, dtype=np.float64)
+    median_boot = np.empty(config.n_resamples, dtype=np.float64)
+    rms_boot = np.empty(config.n_resamples, dtype=np.float64) if has_rms else None
+
+    offset = 0
+    while offset < config.n_resamples:
+        this_chunk = min(chunk_size, config.n_resamples - offset)
+        idx = rng.integers(0, n, size=(this_chunk, n))
+        resamples = per_object_values[idx]  # (this_chunk, n)
+        with np.errstate(invalid="ignore"):
+            mean_boot[offset:offset + this_chunk] = np.nanmean(resamples, axis=1)
+            median_boot[offset:offset + this_chunk] = np.nanmedian(resamples, axis=1)
+            if has_rms:
+                rms_resamples = per_object_rms[idx]
+                rms_boot[offset:offset + this_chunk] = np.nanmean(
+                    rms_resamples, axis=1
+                )
+        offset += this_chunk
+
+    def _pct(arr: np.ndarray) -> Tuple[float, float]:
+        finite = arr[np.isfinite(arr)]
+        if finite.size == 0:
+            return nan_pair
+        return (
+            float(np.percentile(finite, config.ci_lower_pct)),
+            float(np.percentile(finite, config.ci_upper_pct)),
+        )
+
+    mean_lo, mean_hi = _pct(mean_boot)
+    median_lo, median_hi = _pct(median_boot)
+    rms_lo, rms_hi = _pct(rms_boot) if has_rms else nan_pair
+
+    return {
+        "mean_lo": mean_lo, "mean_hi": mean_hi,
+        "median_lo": median_lo, "median_hi": median_hi,
+        "rms_lo": rms_lo, "rms_hi": rms_hi,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Object-weighted aggregation
 # ---------------------------------------------------------------------------
@@ -241,6 +343,14 @@ def _nansqrt_mean(arr: np.ndarray) -> float:
         return float("nan")
     with np.errstate(invalid="ignore"):
         v = np.sqrt(np.nanmean(arr))
+    return float(v) if np.isfinite(v) else float("nan")
+
+
+def _nanmedian(arr: np.ndarray) -> float:
+    if arr.size == 0:
+        return float("nan")
+    with np.errstate(invalid="ignore"):
+        v = np.nanmedian(arr)
     return float(v) if np.isfinite(v) else float("nan")
 
 
@@ -367,7 +477,8 @@ def _aggregate_one_group_key(
         )
         row["chi2_per_obs"] = chi2_mean
 
-        # For each residual dimension: bias, RMS, SEM, bootstrap CI
+        # For each residual dimension: bias (mean + median), RMS, SEM,
+        # bootstrap CIs for mean, median, and RMS.
         for dim in dims:
             src = _SOURCE_COL[dim]
             mean_col = f"{src}_mean"
@@ -376,7 +487,12 @@ def _aggregate_one_group_key(
                 row[f"bias_{dim}_arcsec"] = float("nan")
                 row[f"bias_{dim}_ci_low"] = float("nan")
                 row[f"bias_{dim}_ci_high"] = float("nan")
+                row[f"bias_{dim}_median_arcsec"] = float("nan")
+                row[f"bias_{dim}_median_ci_low"] = float("nan")
+                row[f"bias_{dim}_median_ci_high"] = float("nan")
                 row[f"rms_{dim}_arcsec"] = float("nan")
+                row[f"rms_{dim}_ci_low"] = float("nan")
+                row[f"rms_{dim}_ci_high"] = float("nan")
                 row[f"sem_{dim}_arcsec"] = float("nan")
                 continue
 
@@ -384,19 +500,28 @@ def _aggregate_one_group_key(
             per_obj_rms = (
                 sub[rms_obj_col].to_numpy(dtype=np.float64)
                 if rms_obj_col in sub.columns
-                else np.full_like(vals, np.nan)
+                else None
             )
 
             row[f"bias_{dim}_arcsec"] = _nanmean(vals)
+            row[f"bias_{dim}_median_arcsec"] = _nanmedian(vals)
             # Mean-of-per-object-RMS matches analysis.compute_observatory_stats
             # when object_weighted=True.  Reproduces the existing baseline
             # observatory_stats.parquet for exact cross-validation.
-            row[f"rms_{dim}_arcsec"] = _nanmean(per_obj_rms)
+            row[f"rms_{dim}_arcsec"] = (
+                _nanmean(per_obj_rms)
+                if per_obj_rms is not None
+                else float("nan")
+            )
             row[f"sem_{dim}_arcsec"] = _nanstd_sem(vals)
 
-            ci_lo, ci_hi = bootstrap_mean_ci(vals, bootstrap, rng)
-            row[f"bias_{dim}_ci_low"] = ci_lo
-            row[f"bias_{dim}_ci_high"] = ci_hi
+            cis = bootstrap_stats_ci(vals, per_obj_rms, bootstrap, rng)
+            row[f"bias_{dim}_ci_low"] = cis["mean_lo"]
+            row[f"bias_{dim}_ci_high"] = cis["mean_hi"]
+            row[f"bias_{dim}_median_ci_low"] = cis["median_lo"]
+            row[f"bias_{dim}_median_ci_high"] = cis["median_hi"]
+            row[f"rms_{dim}_ci_low"] = cis["rms_lo"]
+            row[f"rms_{dim}_ci_high"] = cis["rms_hi"]
 
         rows.append(row)
 
@@ -522,6 +647,27 @@ def compute_bias_table(
     # -----------------------------------------------------------------
     prog_df = df[df["program_code"].notna()].copy()
     if len(prog_df) > 0:
+        # Pre-filter (stn, program_code) groups that cannot pass the
+        # final min_obs_per_group / min_objects_per_group threshold.
+        # On MPC-scale input there are ~1.1M (stn, program_code) combos
+        # but only ~300 pass both filters; computing per-object stats and
+        # bootstrap CIs for the rest wastes ~15 minutes of wall time.
+        prog_sizes = (
+            prog_df.groupby(["stn", "program_code"], dropna=False, sort=False)
+            .agg(_n_obj=("object_id", "nunique"), _n_obs=("object_id", "size"))
+            .reset_index()
+        )
+        keep = prog_sizes[
+            (prog_sizes["_n_obj"] >= min_objects_per_group)
+            & (prog_sizes["_n_obs"] >= min_obs_per_group)
+        ][["stn", "program_code"]]
+        before = len(prog_df)
+        prog_df = prog_df.merge(keep, on=["stn", "program_code"], how="inner")
+        logger.info(
+            "Pre-filter (stn, program_code) groups: %d / %d kept, %d → %d rows",
+            len(keep), len(prog_sizes), before, len(prog_df),
+        )
+    if len(prog_df) > 0:
         per_obj_prog = _compute_per_object_means(
             prog_df, ["stn", "program_code"], dim_cols,
         )
@@ -576,6 +722,25 @@ def compute_bias_table(
     # Rename stn → obs_code for the final catalogue schema
     table = table.rename(columns={"stn": "obs_code"})
 
+    # bias_significant: True when the 95% CI on the mean bias_ra OR
+    # bias_dec excludes zero. False when both CIs straddle zero (i.e. no
+    # statistically resolvable bias in either axis). NaN-aware: when a CI
+    # bound is NaN that side is treated as not-excluding-zero so the flag
+    # never spuriously fires on missing data.
+    if "bias_ra_ci_low" in table.columns and "bias_ra_ci_high" in table.columns:
+        ra_lo = table["bias_ra_ci_low"]
+        ra_hi = table["bias_ra_ci_high"]
+        ra_excl = (ra_lo > 0) | (ra_hi < 0)
+    else:
+        ra_excl = pd.Series(False, index=table.index)
+    if "bias_dec_ci_low" in table.columns and "bias_dec_ci_high" in table.columns:
+        dec_lo = table["bias_dec_ci_low"]
+        dec_hi = table["bias_dec_ci_high"]
+        dec_excl = (dec_lo > 0) | (dec_hi < 0)
+    else:
+        dec_excl = pd.Series(False, index=table.index)
+    table["bias_significant"] = (ra_excl | dec_excl).fillna(False).astype(bool)
+
     # Column ordering
     ordered = [
         "obs_code", "program_code", "n_objects", "n_obs",
@@ -583,9 +748,21 @@ def compute_bias_table(
         "bias_dec_arcsec", "bias_dec_ci_low", "bias_dec_ci_high",
         "bias_at_arcsec", "bias_at_ci_low", "bias_at_ci_high",
         "bias_ct_arcsec", "bias_ct_ci_low", "bias_ct_ci_high",
-        "rms_ra_arcsec", "rms_dec_arcsec", "rms_at_arcsec", "rms_ct_arcsec",
+        "bias_ra_median_arcsec",
+        "bias_ra_median_ci_low", "bias_ra_median_ci_high",
+        "bias_dec_median_arcsec",
+        "bias_dec_median_ci_low", "bias_dec_median_ci_high",
+        "bias_at_median_arcsec",
+        "bias_at_median_ci_low", "bias_at_median_ci_high",
+        "bias_ct_median_arcsec",
+        "bias_ct_median_ci_low", "bias_ct_median_ci_high",
+        "rms_ra_arcsec", "rms_ra_ci_low", "rms_ra_ci_high",
+        "rms_dec_arcsec", "rms_dec_ci_low", "rms_dec_ci_high",
+        "rms_at_arcsec", "rms_at_ci_low", "rms_at_ci_high",
+        "rms_ct_arcsec", "rms_ct_ci_low", "rms_ct_ci_high",
         "sem_ra_arcsec", "sem_dec_arcsec", "sem_at_arcsec", "sem_ct_arcsec",
         "chi2_per_obs",
+        "bias_significant",
         "sigma_model_source", "obs_epoch_start", "obs_epoch_end",
     ]
     # Ensure every expected column exists, even when AT/CT is unavailable
@@ -646,9 +823,21 @@ def _empty_bias_table() -> pd.DataFrame:
         "bias_dec_arcsec", "bias_dec_ci_low", "bias_dec_ci_high",
         "bias_at_arcsec", "bias_at_ci_low", "bias_at_ci_high",
         "bias_ct_arcsec", "bias_ct_ci_low", "bias_ct_ci_high",
-        "rms_ra_arcsec", "rms_dec_arcsec", "rms_at_arcsec", "rms_ct_arcsec",
+        "bias_ra_median_arcsec",
+        "bias_ra_median_ci_low", "bias_ra_median_ci_high",
+        "bias_dec_median_arcsec",
+        "bias_dec_median_ci_low", "bias_dec_median_ci_high",
+        "bias_at_median_arcsec",
+        "bias_at_median_ci_low", "bias_at_median_ci_high",
+        "bias_ct_median_arcsec",
+        "bias_ct_median_ci_low", "bias_ct_median_ci_high",
+        "rms_ra_arcsec", "rms_ra_ci_low", "rms_ra_ci_high",
+        "rms_dec_arcsec", "rms_dec_ci_low", "rms_dec_ci_high",
+        "rms_at_arcsec", "rms_at_ci_low", "rms_at_ci_high",
+        "rms_ct_arcsec", "rms_ct_ci_low", "rms_ct_ci_high",
         "sem_ra_arcsec", "sem_dec_arcsec", "sem_at_arcsec", "sem_ct_arcsec",
         "chi2_per_obs",
+        "bias_significant",
         "sigma_model_source", "obs_epoch_start", "obs_epoch_end",
     ]
     return pd.DataFrame(columns=cols)

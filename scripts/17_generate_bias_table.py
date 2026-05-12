@@ -20,7 +20,19 @@ Methodology
 - Object-weighted aggregation: per-object mean residuals are computed first,
   then averaged with equal weight across objects in each group.
 - Bootstrap CIs: objects (not observations) are resampled with replacement
-  for each (obs_code, program_code) group.  Default 2,000 resamples, seed=42.
+  for each (obs_code, program_code) group, with a single shared set of
+  indices producing 95% CIs for mean, median, and RMS in one pass.
+  Default 2,000 resamples (>= 1000 required), seed=42, fully reproducible.
+- Per-station outputs include point estimates AND 95% CIs for:
+    - mean bias RA/Dec/AT/CT
+    - median bias RA/Dec/AT/CT
+    - RMS scatter RA/Dec/AT/CT
+  plus a `bias_significant` boolean (True when the mean-bias CI excludes
+  zero in RA or Dec — i.e. a statistically resolvable bias on at least
+  one axis).
+- The LOOO catalog intentionally does NOT consume reported rmsra/rmsdec
+  for weighting; the bootstrap is over the empirical residual distribution
+  per station.
 - Groups produced:
     - one row per observatory (program_code null)
     - one row per (observatory, program_code) pair where program_code is
@@ -421,6 +433,47 @@ def main() -> int:
         report_path.write_text(report_text)
         print("\n" + report_text + "\n")
         logger.info("Wrote %s", report_path)
+
+        # Per-anchor CI widths (mean/median/RMS) — used to confirm that CI
+        # widths shrink as n_obs grows and that the bootstrap point estimate
+        # tracks the simple object-weighted mean.
+        anchor_codes = [a.obs_code for a in anchors]
+        obs_only = bias_table[bias_table["program_code"].isna()].set_index("obs_code")
+        anchor_rows = obs_only.reindex(anchor_codes)
+        widths_lines = []
+        widths_lines.append("Anchor-station CI widths (95%, arcsec)")
+        widths_lines.append("=" * 96)
+        widths_lines.append(
+            f"{'stn':<5} {'n_obj':>6} {'n_obs':>8} "
+            f"{'bias_ra':>9} {'w(RA)':>7} {'w(med RA)':>10} {'w(RMS RA)':>10} "
+            f"{'bias_dec':>9} {'w(Dec)':>7} {'w(med Dec)':>11} {'w(RMS Dec)':>11} "
+            f"{'sig':>4}"
+        )
+        widths_lines.append("-" * 96)
+        for code in anchor_codes:
+            if code not in anchor_rows.index or pd.isna(anchor_rows.loc[code]["n_obs"]):
+                widths_lines.append(f"{code:<5} MISSING")
+                continue
+            r = anchor_rows.loc[code]
+            w_ra = r["bias_ra_ci_high"] - r["bias_ra_ci_low"]
+            w_ra_med = r["bias_ra_median_ci_high"] - r["bias_ra_median_ci_low"]
+            w_ra_rms = r["rms_ra_ci_high"] - r["rms_ra_ci_low"]
+            w_dec = r["bias_dec_ci_high"] - r["bias_dec_ci_low"]
+            w_dec_med = r["bias_dec_median_ci_high"] - r["bias_dec_median_ci_low"]
+            w_dec_rms = r["rms_dec_ci_high"] - r["rms_dec_ci_low"]
+            sig = "Y" if bool(r["bias_significant"]) else "N"
+            widths_lines.append(
+                f"{code:<5} {int(r['n_objects']):>6d} {int(r['n_obs']):>8d} "
+                f"{r['bias_ra_arcsec']:>+9.4f} {w_ra:>7.4f} "
+                f"{w_ra_med:>10.4f} {w_ra_rms:>10.4f} "
+                f"{r['bias_dec_arcsec']:>+9.4f} {w_dec:>7.4f} "
+                f"{w_dec_med:>11.4f} {w_dec_rms:>11.4f} {sig:>4}"
+            )
+        widths_text = "\n".join(widths_lines)
+        widths_path = args.output_dir / "anchor_ci_widths.txt"
+        widths_path.write_text(widths_text)
+        print("\n" + widths_text + "\n")
+        logger.info("Wrote %s", widths_path)
 
     return 0
 

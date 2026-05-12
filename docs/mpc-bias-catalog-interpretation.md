@@ -124,9 +124,19 @@ through the pipeline differently — for the v12 catalog it is a no-op
 
 The published merged catalog drops rows whose `stn` is not present in the
 adam_core observatory code table used by the local validation environment
-(`adam_core.observers.OBSERVATORY_CODES`, sourced from
-`mpc_obscodes==2026.3.12` at the time of writing). For the v12 catalog
-this dropped **89 rows / 4 codes / 6 distinct objects**:
+(`adam_core.observers.OBSERVATORY_CODES`). This filter is a live check
+against the installed `mpc_obscodes` table, not a hard-coded list.
+
+For the v12 catalog the local pin has been bumped to
+`mpc_obscodes>=2026.3.25` (bead `1i5`), matching the snapshot baked into
+the cloud image (`pilot-v12-20260507`). With that pin all 1,228 observatory
+codes present in the merged input resolve locally and the unknown-code
+filter drops **0 rows** from the v12 published catalog.
+
+Prior to the pin bump the filter dropped 89 rows attributed to 4 codes
+across 6 distinct objects (O58, S42, W26, X26) — codes that were added
+to MPC after the previously pinned `mpc_obscodes==2026.3.12` release. The
+published v12 catalog now includes these rows:
 
 | stn  | rows | distinct objects |
 |------|-----:|-----------------:|
@@ -135,18 +145,12 @@ this dropped **89 rows / 4 codes / 6 distinct objects**:
 | W26  | 17   | 3                |
 | X26  | 30   | 3                |
 
-These codes are MPC observatory designations that were added after the
-`mpc_obscodes` release pinned by our local environment. They reached the
-merged catalog because the cloud image (`pilot-v12-20260507`) was built on
-a base image with a different `mpc_obscodes` snapshot that recognised
-them. The residuals for these rows are plausible (≈0.1 ″), suggesting the
-cloud-side observer state for them was correctly resolved at the time —
-but because we cannot verify them locally against the pinned table, the
-safer publication choice is to drop them and surface the disposition.
-None of the 13 anchor stations is affected by this filter.
-
-Action item out of scope of this bead: file an upstream bead to bump the
-`mpc_obscodes` pin alongside the next `adam_core` release.
+None of the 13 anchor stations is affected. The four newly-included codes
+all fail the small-sample cutoff (§3.3) and therefore do not appear in
+`observatory_stats_published.parquet`. In `bias_table.parquet` S42 alone
+clears the looser bias-table cutoff (`n_obs ≥ 10` AND `n_objects ≥ 3`
+after the per-row quality filter); O58, W26, and X26 fall below the
+cutoff once the per-row chi² filter is applied.
 
 ### 3.3 Small-sample cutoff
 
@@ -154,11 +158,13 @@ Action item out of scope of this bead: file an upstream bead to bump the
 `n_objects < 20`. Per-station numbers below these thresholds are
 statistically noisy: their bootstrap CIs span a factor of several, so the
 point estimates and CIs they expose are not publication-grade. The cutoff
-takes the v12 observatory_stats from 1,224 stations to **544 stations**
-(680 dropped). The row-level `merged_looo_results_published.parquet`
-keeps every surviving row regardless of station n_obs, so downstream
-consumers who *want* small-sample stations can re-aggregate from the row
-level with their own thresholds.
+takes the v12 observatory_stats from 1,228 stations to **544 stations**
+(684 dropped — including the four newly-recovered codes O58, S42, W26,
+X26 that were unknown before the `mpc_obscodes` pin bump in §3.2). The
+row-level `merged_looo_results_published.parquet` keeps every surviving
+row regardless of station n_obs, so downstream consumers who *want*
+small-sample stations can re-aggregate from the row level with their own
+thresholds.
 
 The cutoff filters by AND of (n_obs ≥ 100, n_objects ≥ 20), not OR. A
 station with 200 observations across only 5 objects would still fail —
@@ -175,8 +181,9 @@ file and trust every row.
 The 13 anchor stations from the 3,500-object reference run
 (`data/bias_catalog/3500obj/`) are all present in the published v12 stats
 with identical n_obs, n_objects, and per-station RMS values as the
-pre-hygiene v12 catalog (the four unknown codes filtered out are not
-among the anchors, so hygiene is a no-op for them). Running
+pre-hygiene v12 catalog (the four newly-recovered codes O58/S42/W26/X26
+are not among the anchors, so the pin bump and the unknown-code filter
+are both no-ops for them). Running
 `scripts/17_generate_bias_table.py --validate-anchors` on
 `merged_looo_results_published.parquet` produces the same anchor pass
 count as on the pre-hygiene merged input — hygiene does not regress

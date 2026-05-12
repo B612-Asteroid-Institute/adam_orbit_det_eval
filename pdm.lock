@@ -5,7 +5,7 @@
 groups = ["default", "test"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:5b97b3622b496a9e0290facf2c2175f222ab6036bc7bad2e188daeeaf06801a1"
+content_hash = "sha256:6bcf6103c9a86d40c08d495fb9294d1cca9d451b6c1a3840215b37426f18b3e6"
 
 [[metadata.targets]]
 requires_python = ">=3.11,<3.13"
@@ -1820,13 +1820,13 @@ files = [
 
 [[package]]
 name = "mpc-obscodes"
-version = "2026.3.12"
+version = "2026.5.7"
 requires_python = ">=3.7"
 summary = "Minor Planet Center Observatory Codes"
 groups = ["default"]
 files = [
-    {file = "mpc_obscodes-2026.3.12-py3-none-any.whl", hash = "sha256:6f06999af264805c58292f65d92bcafefb7b5fd5d25bba2192296320c6d71ca9"},
-    {file = "mpc_obscodes-2026.3.12.tar.gz", hash = "sha256:fcd6cb0b70a11690f2f21b02d8f2dece407e2be9de3bc03fbe30f84d112ecb81"},
+    {file = "mpc_obscodes-2026.5.7-py3-none-any.whl", hash = "sha256:e32e25d716b9214a5297a145dd21566294af8adc29ebdb95fd2741d1924b3342"},
+    {file = "mpc_obscodes-2026.5.7.tar.gz", hash = "sha256:241b92cc4a6cbea989d68f7d5323470bdd04086ba36ce07ef76f222d810c6e70"},
 ]
 
 [[package]]

@@ -28,7 +28,7 @@ dependencies = [
   "numpy>=2.0.0",
   "pyarrow>=13.0.0",
   "quivr>=0.8.1",
-  "mpc-obscodes",
+  "mpc-obscodes>=2026.3.25",
   "mpcq",
   "ipykernel",
   "ipywidgets",

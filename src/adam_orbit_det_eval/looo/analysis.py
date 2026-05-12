@@ -509,76 +509,92 @@ def compute_program_code_stats(
     tbl = filtered.table
     if "program_code" not in tbl.schema.names:
         return ProgramCodeStats.empty()
-
-    stn_col = tbl.column("stn").to_pylist()
-    prog_col = tbl.column("program_code").to_pylist()
-    obj_col = tbl.column("object_id").to_pylist()
-
-    groups = sorted(
-        set(zip(stn_col, prog_col)),
-        key=lambda x: (x[0] or "", x[1] or ""),
-    )
-
-    rows = []
-    for stn, prog in groups:
-        grp_mask = pa.array(
-            [(s == stn and p == prog) for s, p in zip(stn_col, prog_col)]
-        )
-        grp = tbl.filter(grp_mask)
-        n_obs = len(grp)
-        if n_obs < min_obs_per_group:
-            continue
-
-        n_objects = int(len(pc.unique(grp.column("object_id"))))
-
-        ra = np.array(
-            [x for x in grp.column("residual_ra_arcsec").to_pylist() if x is not None],
-            dtype=float,
-        )
-        dec = np.array(
-            [x for x in grp.column("residual_dec_arcsec").to_pylist() if x is not None],
-            dtype=float,
-        )
-        chi2 = np.array(
-            [x for x in grp.column("chi2").to_pylist() if x is not None],
-            dtype=float,
-        )
-
-        rows.append(
-            dict(
-                stn=stn,
-                program_code=prog,
-                n_obs=n_obs,
-                n_objects=n_objects,
-                mean_ra_arcsec=_nanmean(ra),
-                mean_dec_arcsec=_nanmean(dec),
-                rms_ra_arcsec=_nanrms(ra),
-                rms_dec_arcsec=_nanrms(dec),
-                median_abs_ra_arcsec=_nanmedian_abs(ra),
-                median_abs_dec_arcsec=_nanmedian_abs(dec),
-                mean_chi2_per_obs=_nanmean(chi2),
-                median_chi2_per_obs=(
-                    float(np.nanmedian(chi2)) if len(chi2) > 0 else np.nan
-                ),
-            )
-        )
-
-    if not rows:
+    if tbl.num_rows == 0:
         return ProgramCodeStats.empty()
 
+    # Single columnar pass via pandas groupby. The legacy implementation built
+    # one Python-list boolean mask per (stn, program_code) group, which is
+    # O(N x G) and projects to 3-5 hours at 5M rows / 3k groups (bead ctq).
+    # pyarrow's group_by does not provide an exact median aggregate, and the
+    # nanrms / nanmedian_abs reductions are not built-ins, so we route through
+    # pandas where each can be expressed as a single aggregate.
+    import pandas as pd
+    df = tbl.select(
+        [
+            "stn",
+            "program_code",
+            "object_id",
+            "residual_ra_arcsec",
+            "residual_dec_arcsec",
+            "chi2",
+        ]
+    ).to_pandas()
+
+    df["_ra2"] = df["residual_ra_arcsec"] ** 2
+    df["_dec2"] = df["residual_dec_arcsec"] ** 2
+    df["_abs_ra"] = df["residual_ra_arcsec"].abs()
+    df["_abs_dec"] = df["residual_dec_arcsec"].abs()
+
+    # dropna=False keeps groups whose program_code is None (legacy
+    # set(zip(stn, prog)) included None pairs). pandas mean/median default to
+    # skipna=True, matching np.nanmean/np.nanmedian semantics on residuals.
+    grouped = df.groupby(["stn", "program_code"], dropna=False, sort=False)
+    agg = grouped.agg(
+        n_obs=("object_id", "size"),
+        n_objects=("object_id", "nunique"),
+        mean_ra_arcsec=("residual_ra_arcsec", "mean"),
+        mean_dec_arcsec=("residual_dec_arcsec", "mean"),
+        _mean_ra2=("_ra2", "mean"),
+        _mean_dec2=("_dec2", "mean"),
+        median_abs_ra_arcsec=("_abs_ra", "median"),
+        median_abs_dec_arcsec=("_abs_dec", "median"),
+        mean_chi2_per_obs=("chi2", "mean"),
+        median_chi2_per_obs=("chi2", "median"),
+    ).reset_index()
+
+    agg = agg[agg["n_obs"] >= min_obs_per_group].copy()
+    if len(agg) == 0:
+        return ProgramCodeStats.empty()
+
+    agg["rms_ra_arcsec"] = np.sqrt(agg["_mean_ra2"])
+    agg["rms_dec_arcsec"] = np.sqrt(agg["_mean_dec2"])
+
+    for col in (
+        "mean_ra_arcsec",
+        "mean_dec_arcsec",
+        "rms_ra_arcsec",
+        "rms_dec_arcsec",
+        "median_abs_ra_arcsec",
+        "median_abs_dec_arcsec",
+        "mean_chi2_per_obs",
+        "median_chi2_per_obs",
+    ):
+        agg.loc[~np.isfinite(agg[col]), col] = np.nan
+
+    # Match legacy sort: (stn or "", program_code or "") — None sorts as "".
+    agg["_sort_stn"] = agg["stn"].fillna("")
+    agg["_sort_prog"] = agg["program_code"].fillna("")
+    agg = (
+        agg.sort_values(["_sort_stn", "_sort_prog"])
+        .drop(columns=["_sort_stn", "_sort_prog"])
+        .reset_index(drop=True)
+    )
+
+    program_codes = [None if pd.isna(p) else p for p in agg["program_code"].tolist()]
+
     return ProgramCodeStats.from_kwargs(
-        stn=[r["stn"] for r in rows],
-        program_code=[r["program_code"] for r in rows],
-        n_obs=[r["n_obs"] for r in rows],
-        n_objects=[r["n_objects"] for r in rows],
-        mean_ra_arcsec=[r["mean_ra_arcsec"] for r in rows],
-        mean_dec_arcsec=[r["mean_dec_arcsec"] for r in rows],
-        rms_ra_arcsec=[r["rms_ra_arcsec"] for r in rows],
-        rms_dec_arcsec=[r["rms_dec_arcsec"] for r in rows],
-        median_abs_ra_arcsec=[r["median_abs_ra_arcsec"] for r in rows],
-        median_abs_dec_arcsec=[r["median_abs_dec_arcsec"] for r in rows],
-        mean_chi2_per_obs=[r["mean_chi2_per_obs"] for r in rows],
-        median_chi2_per_obs=[r["median_chi2_per_obs"] for r in rows],
+        stn=agg["stn"].tolist(),
+        program_code=program_codes,
+        n_obs=agg["n_obs"].astype(int).tolist(),
+        n_objects=agg["n_objects"].astype(int).tolist(),
+        mean_ra_arcsec=agg["mean_ra_arcsec"].tolist(),
+        mean_dec_arcsec=agg["mean_dec_arcsec"].tolist(),
+        rms_ra_arcsec=agg["rms_ra_arcsec"].tolist(),
+        rms_dec_arcsec=agg["rms_dec_arcsec"].tolist(),
+        median_abs_ra_arcsec=agg["median_abs_ra_arcsec"].tolist(),
+        median_abs_dec_arcsec=agg["median_abs_dec_arcsec"].tolist(),
+        mean_chi2_per_obs=agg["mean_chi2_per_obs"].tolist(),
+        median_chi2_per_obs=agg["median_chi2_per_obs"].tolist(),
     )
 
 

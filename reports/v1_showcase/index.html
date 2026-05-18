@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>v12 LOOO observatory-bias catalog</title>
+<title>v1 LOOO observatory-bias catalog</title>
 <style>
 
 * { box-sizing: border-box; }
@@ -136,10 +136,10 @@ footer code { background: #eee; padding: 1px 5px; border-radius: 3px; font-size:
 </head>
 <body>
 <div class="container">
-  <h1>v12 LOOO observatory-bias catalog</h1>
+  <h1>v1 LOOO observatory-bias catalog</h1>
   <p class="subtitle">Per-station mean astrometric residual bias measured by leave-one-observatory-out cross-validation.</p>
   <p>
-  This page presents the <strong>v12 Leave-One-Observatory-Out (LOOO)</strong>
+  This page presents the <strong>v1 Leave-One-Observatory-Out (LOOO)</strong>
   observatory-bias catalog: for each minor-planet object in the source set,
   every observatory is held out in turn, the orbit is re-fit on the remaining
   observations, and the held-out residuals are aggregated per station. The
@@ -184,7 +184,7 @@ footer code { background: #eee; padding: 1px 5px; border-radius: 3px; font-size:
   <div class="tile">
     <div class="label">Run</div>
     <div class="value">2026-05-10</div>
-    <div class="sub">pilot-v12-20260507 · <code>5039ebf8d368</code></div>
+    <div class="sub">pilot-v12-20260507 · <code>2d14feda98e0</code></div>
   </div>
 </div>
 
@@ -194,9 +194,9 @@ footer code { background: #eee; padding: 1px 5px; border-radius: 3px; font-size:
     <em>Icarus</em> 296, 139–149) Table 1 reports per-station residual RMS
     for the 13 most-productive CCD surveys, computed against multi-apparition
     JPL orbit-fits after Farnocchia-Chesley-Chamberlin-Tholen (FCCT14)
-    star-catalog debiasing. Of those 13, 12 appear in v12 —
+    star-catalog debiasing. Of those 13, 12 appear in v1 —
     shown below with our per-station RMS placed next to the Veres value and
-    the ratio (v12 ÷ Veres). Only <strong>C51 (WISE)</strong> is absent: it
+    the ratio (v1 ÷ Veres). Only <strong>C51 (WISE)</strong> is absent: it
     is a space-based infrared survey and was excluded at the LOOO eligibility
     step (zero rows even in the raw 5.1M-row residual file), consistent with
     the pipeline's space-based-station exclusion.
@@ -205,18 +205,18 @@ footer code { background: #eee; padding: 1px 5px; border-radius: 3px; font-size:
     <p><strong>Caveat — partially apples-to-oranges.</strong> Veres residuals
     are <em>orbit-fit</em> residuals from a multi-apparition fit that
     conditioned on the observation, with FCCT14 catalog debiasing applied as
-    preprocessing. v12 residuals are <em>held-out</em> LOOO residuals from a
+    preprocessing. v1 residuals are <em>held-out</em> LOOO residuals from a
     fit that excluded the observation, with no catalog debiasing. The
-    methodology gap predicts v12 RMS should be slightly <em>larger</em> than
+    methodology gap predicts v1 RMS should be slightly <em>larger</em> than
     Veres (held-out residuals exceed orbit-fit residuals; skipping FCCT14
     leaves catalog systematics in the residual). Ratios in the ~1.0–1.3 band
     are consistent with that prediction.
-    <strong>v12 ratios significantly below 1.0 are unexpected</strong> and
+    <strong>v1 ratios significantly below 1.0 are unexpected</strong> and
     may indicate the bead-7bt bias filter trimming catastrophic-tail rows
     that Veres retained, station calibration improvements since 2016 (e.g.
     Gaia-anchored re-reductions), or sample-composition effects. The
-    <strong>v12 − Veres</strong> column is highlighted only when the
-    proportional deviation falls outside the methodology-gap band (v12/Veres
+    <strong>v1 − Veres</strong> column is highlighted only when the
+    proportional deviation falls outside the methodology-gap band (v1/Veres
     in ~0.7–1.4): orange for ~0.5–0.7 or 1.4–2.0, red for &lt;0.5 or &gt;2.0.
     Absolute-diff thresholds aren't used because ±0.05″ means very different
     things for F51 (Veres 0.12″) vs 704 (Veres 0.67″).</p>
@@ -232,12 +232,12 @@ footer code { background: #eee; padding: 1px 5px; border-radius: 3px; font-size:
       <th colspan="3" class="grp">Dec (″)</th>
     </tr>
     <tr>
-      <th data-sort="num">v12 RMS [CI]</th>
+      <th data-sort="num">v1 RMS [CI]</th>
       <th data-sort="num">Veres Table 1</th>
-      <th data-sort="num">v12 − Veres</th>
-      <th data-sort="num">v12 RMS [CI]</th>
+      <th data-sort="num">v1 − Veres</th>
+      <th data-sort="num">v1 RMS [CI]</th>
       <th data-sort="num">Veres Table 1</th>
-      <th data-sort="num">v12 − Veres</th>
+      <th data-sort="num">v1 − Veres</th>
     </tr>
   </thead>
   <tbody>
@@ -1391,15 +1391,15 @@ footer code { background: #eee; padding: 1px 5px; border-radius: 3px; font-size:
 
   <footer>
   <strong>Provenance.</strong>
-  v12 LOOO catalog produced by the cloud pipeline on <strong>2026-05-10</strong>
+  v1 LOOO catalog produced by the cloud pipeline on <strong>2026-05-10</strong>
   with image <code>pilot-v12-20260507</code>; catalog assembled on branch
-  <code>kk/mpc-scale-bias-catalog</code> at <code>5039ebf8d368</code>.
+  <code>kk/mpc-scale-bias-catalog</code> at <code>2d14feda98e0</code>.
   Source files under
   <code>adam_orbit_det_eval/data/mpc_scale_results_20260510/bias_catalog_published_atct/</code>
   (rebuilt with <code>dims_populated = ["ra", "dec", "at", "ct"]</code>).
   Hygiene filters (occultation mode, unknown obscodes, small-sample cutoff)
   are documented in <code>publication_hygiene_audit.json</code>.
-  Generated by <code>scripts/build_v12_showcase.py</code>.
+  Generated by <code>scripts/build_v1_showcase.py</code>.
 </footer>
 </div>
 <script>

@@ -537,7 +537,7 @@ def compute_bias_table(
     min_obs_per_group: int = 10,
     min_objects_per_group: int = 3,
     max_hold_in_reduced_chi2: Optional[float] = 100.0,
-    max_object_mean_chi2: Optional[float] = 50.0,
+    max_object_mean_chi2: Optional[float] = None,
     bootstrap: Optional[BootstrapConfig] = None,
 ) -> pd.DataFrame:
     """

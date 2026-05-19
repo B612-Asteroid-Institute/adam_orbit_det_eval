@@ -129,11 +129,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--max-object-chi2",
         type=float,
-        default=50.0,
+        default=None,
         help="Drop entire objects whose mean held-out chi2 across all stations "
-             "exceeds this threshold (default: 50). Filters non-gravitational-"
-             "force targets whose inflation is object-level, not station-level. "
-             "Matches the existing analysis.py baseline.",
+             "exceeds this threshold (default: None — filter disabled). "
+             "Historically defaulted to 50, but the chi2 implementation uses "
+             "reported per-obs sigmas and is contaminated by stations with "
+             "pathologically small sigmas (see bead gnm / N86). Pass an "
+             "explicit value to re-enable.",
     )
     p.add_argument(
         "--validate-anchors",

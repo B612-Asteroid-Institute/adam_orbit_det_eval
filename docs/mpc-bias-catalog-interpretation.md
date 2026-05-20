@@ -195,6 +195,56 @@ the 3,500-obj run and v12 point estimates differ slightly with the larger
 object set. That is a separate calibration question; the published v12
 catalog supersedes the 3,500-obj reference as the bias source of record.
 
+### 3.5 No object-level quality filter at aggregation (v1)
+
+`compute_bias_table` previously defaulted to dropping objects whose
+mean held-out reduced χ² exceeded 50 (`max_object_mean_chi2=50.0`). The
+intent was to suppress non-gravitational-force contamination (comets,
+high-Yarkovsky NEOs) at the aggregation step.
+
+That filter is disabled in v1 (`max_object_mean_chi2=None`) because the
+χ² it consumes is built from MPC-reported per-observation sigmas, and a
+small number of stations report pathologically small sigmas (N86 reports
+nanoarcsec-scale σ in some submissions). On any object N86 also observed,
+N86's term in the per-object mean χ² dominates and drives the object's
+mean χ² to ~10⁸, indicting the object across *every* station that
+observed it. Reconciliation under the previous default dropped ~373,000
+rows across 780 stations from the per-station rollup — almost all of
+them clean data — purely because N86 happened to share an object with
+that station. Of the 261 objects globally flagged by the old filter,
+only ~28 were legitimately high-χ²; ~233 were collateral damage from
+N86's sigma reporting. (See `bias_catalog_published/reconciliation_544_vs_520.txt`
+and bead `zw0` for the full root-cause trace.)
+
+Consequence for v1 readers:
+
+- The 100/20 small-sample cutoff (§3.3) is the only object-level
+  quality gate at the publication-hygiene boundary. Bias values are
+  empirical residual means and are independent of the reported sigmas,
+  so removing the σ-dependent filter does not corrupt the bias estimate
+  itself — it restores rows that were unfairly hidden.
+- N86 now appears in the published `bias_table` with `bias_ra`,
+  `bias_dec`, and AT/CT values in a perfectly reasonable arcsec-scale
+  range, but with `chi2_per_obs` in the 10⁷–10⁸ range. **That huge
+  χ² is honest reporting of N86's broken sigma stream, not a numerical
+  problem with N86's bias estimate.** Downstream consumers who want
+  to suppress non-gravitational-force objects should apply an
+  object-level filter that does *not* depend on the reported σ — see
+  v2 below.
+- For program-level (per-(stn, program_code)) rows the same caveat
+  applies. A handful of (stn, program_code) groups will have
+  similarly inflated `chi2_per_obs` and should be read with the same
+  caveat: the bias values are fine; the χ² column tells you about the
+  observer's σ reports.
+
+v2 (bead `54t`) replaces this filter with a σ-independent
+residual-magnitude proxy (drop objects whose held-out residual
+magnitude exceeds a robust catalog-wide percentile). That avoids
+the sigma-contamination failure mode while still suppressing
+genuine non-gravitational-force objects from the aggregation. v1
+ships without that replacement and without the broken original; the
+denominator is the same 544 stations as `observatory_stats_published`.
+
 ## 4. Pointers
 
 - Bead `5z2` — comparison of the published catalog against FCCT14 reference

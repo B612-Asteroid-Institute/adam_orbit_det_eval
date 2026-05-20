@@ -118,3 +118,18 @@ Replay (Python):
   Apply compute_bias_table's two chi2 filters to merged_looo_results_published and
   re-aggregate -> 520 stations, matching the bias-table publication-ready subset
   exactly (set equality verified).
+
+5. Resolution (2026-05-19, bead gnm — commit 41fb0c3)
+-----------------------------------------------------
+Resolved 2026-05-19 by option (b): max_object_mean_chi2 filter dropped from
+bias_table aggregation. The compute_bias_table default (and the
+scripts/17_generate_bias_table.py argparse default) was changed from 50.0 to
+None. Both bias_catalog_published/ and bias_catalog_published_atct/ were
+regenerated; both denominators now publish at 544 stations. N86 reappears in
+the published bias_table with sensible bias values (bias_ra=-0.046,
+bias_dec=+0.072 arcsec, n_obs=1756, n_objects=246) and a chi²/obs ~2.8e8 —
+honest reporting of N86's broken sigma reports, not a numerical issue with
+the bias estimate (bias values are sigma-independent). v2 (bead 54t) will
+install the sigma-independent residual-magnitude proxy as the replacement
+object-quality filter. See commit 41fb0c3 (source edit) plus the follow-up
+catalog-refresh commit.

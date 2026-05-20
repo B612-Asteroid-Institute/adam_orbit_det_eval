@@ -45,13 +45,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Inject the symlinked adam_fo source so we get FindOrbOrbitFitter from the
-# kk/reference-orbit-warm-start branch (the wheel installed in the venv is an
-# older release that pre-dates that symbol).
-_ADAM_FO_SRC = "/Users/kathleenkiker/od_experiments_setup/adam_fo/src"
-if _ADAM_FO_SRC not in sys.path:
-    sys.path.insert(0, _ADAM_FO_SRC)
-
 import numpy as np
 import pandas as pd
 import pyarrow as pa

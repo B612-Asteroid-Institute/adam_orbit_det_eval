@@ -5,7 +5,12 @@ import pyarrow.compute as pc
 from adam_core.time import Timestamp
 from mpcq import MPCObservations
 
-from ..utils import get_spacebased_stns, mpc_to_od_observations
+from ..utils import (
+    VERES2017_FALLBACK_SIGMA,
+    get_spacebased_stns,
+    get_veres2017_sigma,
+    mpc_to_od_observations,
+)
 
 
 def test_get_spacebased_stn() -> None:
@@ -103,12 +108,16 @@ def _make_synthetic_obs(
     )
 
 
-def test_mpc_to_od_observations_bias_round_trip() -> None:
-    """Inject a known per-station bias and verify mpc_to_od_observations subtracts it."""
+def test_mpc_to_od_observations_bias_subtract_round_trip() -> None:
+    """Legacy subtract mode: a known bias is subtracted from observed RA/Dec.
+
+    Kept for reproducibility/regression coverage; the default application mode
+    is now 'sigma_floor' (see test_mpc_to_od_observations_bias_sigma_floor).
+    """
     ra_deg = 100.123456789
     dec_deg = -42.987654321
     stn = "Z99"
-    bias_ra_arcsec = 0.150  # cos(dec)-corrected tangent-plane arcsec
+    bias_ra_arcsec = 0.150
     bias_dec_arcsec = -0.230
 
     obs = _make_synthetic_obs(ra_deg=ra_deg, dec_deg=dec_deg, stn=stn)
@@ -126,6 +135,7 @@ def test_mpc_to_od_observations_bias_round_trip() -> None:
         obs,
         prevent_nans=False,
         bias_table={stn: (bias_ra_arcsec, bias_dec_arcsec)},
+        bias_application="subtract",
     )
     assert od_biased is not None
 
@@ -145,8 +155,46 @@ def test_mpc_to_od_observations_bias_round_trip() -> None:
     )
 
 
+def test_mpc_to_od_observations_bias_sigma_floor() -> None:
+    """Default sigma_floor mode: positions are unchanged; per-axis sigmas are
+    floored at |bias| for listed stations."""
+    ra_deg = 12.34
+    dec_deg = -25.0
+    stn = "Z99"
+    # MPC reported sigma is 0.5"; bias is large in RA and small in Dec so that
+    # only the RA axis gets floored.
+    obs = _make_synthetic_obs(ra_deg=ra_deg, dec_deg=dec_deg, stn=stn)
+    bias_ra_arcsec = -1.20  # |bias| > 0.5 → RA sigma gets floored to 1.20
+    bias_dec_arcsec = 0.10  # |bias| < 0.5 → Dec sigma stays at 0.5
+
+    od_floor = mpc_to_od_observations(
+        obs,
+        prevent_nans=False,
+        bias_table={stn: (bias_ra_arcsec, bias_dec_arcsec)},
+        # bias_application defaults to 'sigma_floor'
+    )
+    assert od_floor is not None
+
+    # Positions untouched.
+    np.testing.assert_allclose(
+        od_floor.coordinates.lon.to_numpy(zero_copy_only=False), [ra_deg], atol=1e-12
+    )
+    np.testing.assert_allclose(
+        od_floor.coordinates.lat.to_numpy(zero_copy_only=False), [dec_deg], atol=1e-12
+    )
+
+    # Sigmas: coords.covariance.sigmas index 1 is lon (RA without cos(dec)) and
+    # index 2 is lat (Dec). The lon sigma in degrees is (cos(dec) sigma) / cos(dec).
+    cos_dec = np.cos(np.deg2rad(dec_deg))
+    sigmas_deg = od_floor.coordinates.covariance.sigmas
+    sigma_ra_cosdec_arcsec = sigmas_deg[0, 1] * cos_dec * 3600.0
+    sigma_dec_arcsec = sigmas_deg[0, 2] * 3600.0
+    np.testing.assert_allclose(sigma_ra_cosdec_arcsec, 1.20, rtol=1e-10)
+    np.testing.assert_allclose(sigma_dec_arcsec, 0.5, rtol=1e-10)
+
+
 def test_mpc_to_od_observations_bias_passthrough_unknown_station() -> None:
-    """A station absent from the bias table is left unchanged."""
+    """A station absent from the bias table is left unchanged (positions and sigmas)."""
     obs = _make_synthetic_obs(
         ra_deg=12.5, dec_deg=30.0, stn="Z99", obs_id="passthrough-1"
     )
@@ -160,3 +208,63 @@ def test_mpc_to_od_observations_bias_passthrough_unknown_station() -> None:
     np.testing.assert_allclose(
         od_biased.coordinates.lat.to_numpy(zero_copy_only=False), [30.0], atol=1e-12
     )
+    cos_dec = np.cos(np.deg2rad(30.0))
+    sigmas_deg = od_biased.coordinates.covariance.sigmas
+    np.testing.assert_allclose(sigmas_deg[0, 1] * cos_dec * 3600.0, 0.5, rtol=1e-10)
+    np.testing.assert_allclose(sigmas_deg[0, 2] * 3600.0, 0.5, rtol=1e-10)
+
+
+def test_get_veres2017_sigma_lookup() -> None:
+    """Spot-check Veres lookup order: override > catalog default > fallback."""
+    # Per-(stn, catalog) override
+    assert get_veres2017_sigma("F51", "Gaia2") == (0.15, 0.15)
+    # Per-catalog default (no stn override)
+    assert get_veres2017_sigma("999", "Gaia2") == (0.18, 0.18)
+    # Unknown catalog → fallback
+    assert get_veres2017_sigma("999", "MADEUP") == (
+        VERES2017_FALLBACK_SIGMA,
+        VERES2017_FALLBACK_SIGMA,
+    )
+    # Both None → fallback
+    assert get_veres2017_sigma(None, None) == (
+        VERES2017_FALLBACK_SIGMA,
+        VERES2017_FALLBACK_SIGMA,
+    )
+
+
+def test_mpc_to_od_observations_sigma_model_veres2017_fills_missing() -> None:
+    """When MPC sigmas are missing, sigma_model='veres2017' fills from the lookup."""
+    obs_time = Timestamp.from_iso8601(["2024-01-01T00:00:00"], scale="utc")
+    # rmsra/rmsdec are explicit NaN to trigger the fill-in
+    obs = MPCObservations.from_kwargs(
+        requested_provid=["missing-sigma-1"],
+        primary_designation=["missing-sigma-1"],
+        obsid=["missing-sigma-1"],
+        trksub=["trk1"],
+        provid=["missing-sigma-1"],
+        permid=[None],
+        submission_id=[None],
+        obssubid=[None],
+        obstime=obs_time,
+        ra=[100.0],
+        dec=[0.0],
+        rmsra=[float("nan")],
+        rmsdec=[float("nan")],
+        rmscorr=[0.0],
+        mag=[20.0],
+        rmsmag=[0.1],
+        band=["V"],
+        stn=["Z99"],
+        updated_at=Timestamp.from_iso8601(["2024-01-01T00:00:00"], scale="utc"),
+        created_at=Timestamp.from_iso8601(["2024-01-01T00:00:00"], scale="utc"),
+        status=["valid"],
+        astcat=["Gaia2"],
+        mode=["CCD"],
+    )
+
+    od = mpc_to_od_observations(obs, prevent_nans=False, sigma_model="veres2017")
+    assert od is not None
+    sigmas_deg = od.coordinates.covariance.sigmas
+    # At dec=0, cos(dec)=1 so the cos(dec) factor is a no-op.
+    np.testing.assert_allclose(sigmas_deg[0, 1] * 3600.0, 0.18, rtol=1e-10)
+    np.testing.assert_allclose(sigmas_deg[0, 2] * 3600.0, 0.18, rtol=1e-10)

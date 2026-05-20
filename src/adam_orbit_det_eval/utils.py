@@ -1,5 +1,5 @@
 import json
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from adam_core.coordinates import CoordinateCovariances, Origin, SphericalCoordinates
@@ -20,7 +20,10 @@ def get_spacebased_stns() -> List[str]:
 
 
 def mpc_to_od_observations(
-    obs_set: MPCObservations, prevent_nans: bool = True, diag_nan: float = 1.0e-9
+    obs_set: MPCObservations,
+    prevent_nans: bool = True,
+    diag_nan: float = 1.0e-9,
+    bias_table: Optional[Dict[str, Tuple[float, float]]] = None,
 ) -> Optional[OrbitDeterminationObservations]:
     """
     Convert MPC observations into OD observations.
@@ -34,6 +37,15 @@ def mpc_to_od_observations(
       diagonal NaNs are replaced with diag_nan, off-diagonal with zeros
     diag_nan: float, default 1.0e-9
       the value to replace NaNs in covariance diagonals if prevent_nans is True
+    bias_table: dict[str, tuple[float, float]] or None, default None
+      Optional per-station bias correction keyed by MPC obs_code. Each value is
+      ``(bias_ra_arcsec, bias_dec_arcsec)`` where ``bias_ra_arcsec`` is in the
+      cos(dec)-corrected tangent-plane frame (matching the LOOO residual
+      convention in adam_orbit_det_eval). Bias sign is observed - predicted, so
+      the correction subtracts the bias from the observation:
+        corrected_dec = obs_dec - bias_dec_arcsec / 3600
+        corrected_ra  = obs_ra  - (bias_ra_arcsec / 3600) / cos(dec)
+      Stations absent from the table are passed through unchanged.
 
     Returns:
     --------
@@ -82,9 +94,35 @@ def mpc_to_od_observations(
     if prevent_nans:
         cov = np.nan_to_num(cov)
 
+    lon = obs_set.ra.to_numpy(zero_copy_only=False).astype(np.float64, copy=True)
+    lat = obs_set.dec.to_numpy(zero_copy_only=False).astype(np.float64, copy=True)
+
+    if bias_table is not None:
+        stn_codes = codes.to_pylist()
+        bias_ra_arcsec = np.zeros(len(obs_set), dtype=np.float64)
+        bias_dec_arcsec = np.zeros(len(obs_set), dtype=np.float64)
+        for i, code in enumerate(stn_codes):
+            entry = bias_table.get(code)
+            if entry is None:
+                continue
+            bias_ra_arcsec[i] = entry[0]
+            bias_dec_arcsec[i] = entry[1]
+        # cos(dec) here uses the (uncorrected) observed declination — the bias
+        # is small enough that evaluating cos at the corrected dec changes the
+        # result by O(bias^2) which is negligible at sub-arcsec scales.
+        cos_dec_for_bias = np.cos(np.deg2rad(lat))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ra_correction_deg = np.where(
+                np.isfinite(cos_dec_for_bias) & (cos_dec_for_bias != 0.0),
+                (bias_ra_arcsec / 3600.0) / cos_dec_for_bias,
+                0.0,
+            )
+        lon = lon - ra_correction_deg
+        lat = lat - bias_dec_arcsec / 3600.0
+
     coords = SphericalCoordinates.from_kwargs(
-        lon=obs_set.ra.to_numpy(zero_copy_only=False),
-        lat=obs_set.dec.to_numpy(zero_copy_only=False),
+        lon=lon,
+        lat=lat,
         time=obs_time,
         origin=Origin.from_kwargs(code=codes),
         frame="equatorial",

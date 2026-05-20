@@ -126,6 +126,7 @@ def mpc_to_od_observations(
     bias_table: Optional[Dict[str, Tuple[float, float]]] = None,
     sigma_model: str = "const",
     bias_application: str = "sigma_floor",
+    catalog_debias_arcsec: Optional[np.ndarray] = None,
 ) -> Optional[OrbitDeterminationObservations]:
     """
     Convert MPC observations into OD observations.
@@ -170,6 +171,15 @@ def mpc_to_od_observations(
                             This treats the bias estimate as ground truth and was
                             judged too aggressive in the YR4 baseline experiment;
                             kept for reproducibility/A-B comparison.
+    catalog_debias_arcsec: ndarray of shape (N, 2) or None, default None
+      Optional per-observation star-catalog debiasing correction. Each row is
+      ``(bias_ra_cosdec_arcsec, bias_dec_arcsec)`` and is subtracted from the
+      observation as:
+        corrected_dec = obs_dec - bias_dec / 3600
+        corrected_ra  = obs_ra  - (bias_ra / 3600) / cos(dec)
+      Intended consumer: per-(RA, Dec, astcat, JD) EFCC18 corrections computed
+      via :func:`adam_orbit_det_eval.efcc18.compute_efcc18_corrections`. Stations/
+      catalogs with no available correction should be passed in as 0.0 rows.
 
     Returns:
     --------
@@ -297,6 +307,23 @@ def mpc_to_od_observations(
             )
         lon = lon - ra_correction_deg
         lat = lat - bias_dec_arcsec / 3600.0
+
+    if catalog_debias_arcsec is not None:
+        debias = np.asarray(catalog_debias_arcsec, dtype=np.float64)
+        if debias.shape != (len(obs_set), 2):
+            raise ValueError(
+                f"catalog_debias_arcsec must have shape ({len(obs_set)}, 2); "
+                f"got {debias.shape}"
+            )
+        cos_dec_for_debias = np.cos(np.deg2rad(lat))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ra_debias_deg = np.where(
+                np.isfinite(cos_dec_for_debias) & (cos_dec_for_debias != 0.0),
+                (debias[:, 0] / 3600.0) / cos_dec_for_debias,
+                0.0,
+            )
+        lon = lon - ra_debias_deg
+        lat = lat - debias[:, 1] / 3600.0
 
     coords = SphericalCoordinates.from_kwargs(
         lon=lon,

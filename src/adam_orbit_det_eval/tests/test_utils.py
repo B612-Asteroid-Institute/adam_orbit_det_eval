@@ -232,6 +232,56 @@ def test_get_veres2017_sigma_lookup() -> None:
     )
 
 
+def test_mpc_to_od_observations_catalog_debias_round_trip() -> None:
+    """A per-observation catalog-debias correction is subtracted from RA/Dec."""
+    ra_deg = 200.0
+    dec_deg = 35.0
+    stn = "Z99"
+    obs = _make_synthetic_obs(ra_deg=ra_deg, dec_deg=dec_deg, stn=stn)
+
+    bias_ra_cosdec_arcsec = 0.40  # tangent-plane arcsec
+    bias_dec_arcsec = -0.25
+    debias = np.array([[bias_ra_cosdec_arcsec, bias_dec_arcsec]], dtype=np.float64)
+    od = mpc_to_od_observations(
+        obs, prevent_nans=False, catalog_debias_arcsec=debias
+    )
+    assert od is not None
+    cos_dec = np.cos(np.deg2rad(dec_deg))
+    expected_ra = ra_deg - (bias_ra_cosdec_arcsec / 3600.0) / cos_dec
+    expected_dec = dec_deg - bias_dec_arcsec / 3600.0
+    np.testing.assert_allclose(
+        od.coordinates.lon.to_numpy(zero_copy_only=False), [expected_ra], atol=1e-12
+    )
+    np.testing.assert_allclose(
+        od.coordinates.lat.to_numpy(zero_copy_only=False), [expected_dec], atol=1e-12
+    )
+
+    # Zero correction = no change to position
+    od_zero = mpc_to_od_observations(
+        obs,
+        prevent_nans=False,
+        catalog_debias_arcsec=np.zeros((1, 2), dtype=np.float64),
+    )
+    np.testing.assert_allclose(
+        od_zero.coordinates.lon.to_numpy(zero_copy_only=False), [ra_deg], atol=1e-12
+    )
+    np.testing.assert_allclose(
+        od_zero.coordinates.lat.to_numpy(zero_copy_only=False), [dec_deg], atol=1e-12
+    )
+
+    # Wrong shape raises
+    try:
+        mpc_to_od_observations(
+            obs,
+            prevent_nans=False,
+            catalog_debias_arcsec=np.zeros((2, 2), dtype=np.float64),
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Expected ValueError for shape mismatch")
+
+
 def test_mpc_to_od_observations_sigma_model_veres2017_fills_missing() -> None:
     """When MPC sigmas are missing, sigma_model='veres2017' fills from the lookup."""
     obs_time = Timestamp.from_iso8601(["2024-01-01T00:00:00"], scale="utc")

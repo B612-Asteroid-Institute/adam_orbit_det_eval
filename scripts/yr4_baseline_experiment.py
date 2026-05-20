@@ -37,31 +37,27 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
-# The wheel of ``adam_fo`` installed via PDM (``adam_fo>=0.x``) is older than
-# the symlinked source tree in this workspace and does not export
-# ``FindOrbOrbitFitter``. Inject the symlinked source onto ``sys.path`` ahead
-# of site-packages so we pick up the newer wrapper. Match the convention used
-# by ``build_od_discrepancy_population.py``.
-_ADAM_FO_SRC = "/Users/kathleenkiker/od_experiments_setup/adam_fo/src"
-if _ADAM_FO_SRC not in sys.path:
-    sys.path.insert(0, _ADAM_FO_SRC)
+import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
+from adam_assist import ASSISTPropagator
+from adam_core.orbits import Orbits
+from adam_fo.find_orb_orbit_fitter import FindOrbOrbitFitter
+from mpcq import BigQueryMPCClient, MPCObservations
 
-import numpy as np  # noqa: E402
-import pyarrow as pa  # noqa: E402
-import pyarrow.parquet as pq  # noqa: E402
-from adam_assist import ASSISTPropagator  # noqa: E402
-from adam_core.orbits import Orbits  # noqa: E402
-from adam_fo.find_orb_orbit_fitter import FindOrbOrbitFitter  # noqa: E402
-from mpcq import BigQueryMPCClient, MPCObservations  # noqa: E402
-
-from adam_orbit_det_eval.jpl_compare import (  # noqa: E402
+from adam_orbit_det_eval.efcc18 import (
+    compute_efcc18_corrections,
+    load_efcc18_biases,
+    n_observations_covered,
+)
+from adam_orbit_det_eval.jpl_compare import (
     OrbitGap,
     build_comparison_table,
     compute_orbit_gap,
     fetch_jpl_orbit,
     propagate_to_epoch,
 )
-from adam_orbit_det_eval.utils import (  # noqa: E402
+from adam_orbit_det_eval.utils import (
     get_spacebased_stns,
     mpc_to_od_observations,
 )
@@ -164,6 +160,7 @@ def fit_orbit(
     *,
     sigma_model: str = "const",
     bias_application: str = "sigma_floor",
+    catalog_debias_arcsec: Optional[np.ndarray] = None,
 ):
     """Run adam_fo's initial_fit on the observations. Returns FittedOrbits."""
     od_obs = mpc_to_od_observations(
@@ -172,6 +169,7 @@ def fit_orbit(
         bias_table=bias_table,
         sigma_model=sigma_model,
         bias_application=bias_application,
+        catalog_debias_arcsec=catalog_debias_arcsec,
     )
     if od_obs is None or len(od_obs) == 0:
         raise RuntimeError("mpc_to_od_observations returned no observations")
@@ -224,20 +222,33 @@ def make_obs_summary(
 
 
 VARIANT_CONFIGS = [
-    # (variant_id, human_label, sigma_model, bias_application, use_bias_table)
-    ("no_bias", "Baseline (MPC sigmas, no bias)", "const", "sigma_floor", False),
+    # (variant_id, human_label, sigma_model, bias_application, use_bias_table,
+    #  use_efcc18)
+    ("no_bias", "Baseline (MPC sigmas, no bias)", "const", "sigma_floor", False, False),
+    ("veres_only", "Veres 2017 sigmas, no bias", "veres2017", "sigma_floor", False, False),
     (
         "v1_sigma_floor",
-        "v1 bias as sigma-floor (MPC sigmas, σ ≥ |bias|)",
+        "v1 bias as σ-floor (MPC sigmas, σ ≥ |bias|)",
         "const",
         "sigma_floor",
         True,
+        False,
+    ),
+    ("efcc18_only", "EFCC18 catalog debiasing only", "const", "sigma_floor", False, True),
+    (
+        "v1_sigma_floor+efcc18",
+        "v1 σ-floor + EFCC18 debiasing",
+        "const",
+        "sigma_floor",
+        True,
+        True,
     ),
     (
-        "veres_only",
-        "Veres 2017 sigmas, no bias",
-        "veres2017",
-        "sigma_floor",
+        "v1_subtract",
+        "v1 subtracted from RA/Dec (legacy/reference)",
+        "const",
+        "subtract",
+        True,
         False,
     ),
 ]
@@ -364,6 +375,10 @@ Propagator for cross-epoch comparison: {propagator_name}
 - Stations in v1 high-confidence bias table: **{obs_summary['n_unique_stations_in_bias_table']}** of {obs_summary['n_unique_stations']}
 - Observations from a bias-table station: **{obs_summary['n_obs_with_bias_applied']}**
   ({100.0 * obs_summary['frac_obs_with_bias_applied']:.1f}% of all obs)
+- Observations with EFCC18 catalog coverage: **{obs_summary.get('n_obs_with_efcc18_correction', 'n/a')}**
+  ({100.0 * obs_summary.get('frac_obs_with_efcc18_correction', 0.0):.1f}% of all obs) —
+  most YR4 obs use Gaia-DR2/3, ATLAS, or PS1, which postdate EFCC18 and have
+  no entry; EFCC18 is therefore a near-no-op for this object
 
 ## Headline answer
 
@@ -391,47 +406,86 @@ Propagator for cross-epoch comparison: {propagator_name}
 
 ## Variant definitions
 
-- **{variant_labels[variant_order[0]]}** — MPC-reported rmsra/rmsdec; missing
-  sigmas filled with a tiny constant ({1.0e-9} deg²) in covariance. No bias
-  catalog consulted.
-- **{variant_labels.get('v1_sigma_floor', 'v1 sigma floor')}** — MPC sigmas
-  per observation, but for each station in the v1 high-confidence bias
-  catalog we floor the per-axis sigma at |bias_arcsec| (`σ_used =
-  max(σ_reported, |bias|)`). RA/Dec values are **not** modified.
-- **{variant_labels.get('veres_only', 'veres only')}** — When MPC's rmsra or
-  rmsdec is missing or non-positive, fill from the Veres 2017 per-(stn,
-  catalog) lookup table (Table 1 of Vereš et al. 2017, plus per-station
+- **{variant_labels.get('no_bias', 'no_bias')}** — MPC-reported `rmsra`/`rmsdec`;
+  missing sigmas filled with a tiny constant (1e-09 deg²) in covariance. No
+  bias catalog consulted, no catalog debiasing.
+- **{variant_labels.get('veres_only', 'veres_only')}** — Fill missing/non-positive
+  MPC sigmas from the Veres 2017 per-(stn, catalog) lookup (Table 1 + per-station
   overrides for high-volume sites). No bias catalog applied; RA/Dec unchanged.
+- **{variant_labels.get('v1_sigma_floor', 'v1_sigma_floor')}** — For each station
+  in the v1 high-confidence bias catalog, floor the per-axis sigma at
+  `|bias_arcsec|` (`σ_used = max(σ_reported, |bias|)`). Downweights biased
+  observatories without modifying their RA/Dec.
+- **{variant_labels.get('efcc18_only', 'efcc18_only')}** — Subtract the EFCC18
+  per-(HEALPix-tile, catalog, epoch) correction from each observation's RA/Dec.
+  Only catalogs in EFCC18 are corrected (Gaia-DR2/3, ATLAS, PS1 → no correction).
+- **{variant_labels.get('v1_sigma_floor+efcc18', 'v1_sigma_floor+efcc18')}** —
+  v1 sigma-floor *and* EFCC18 catalog debiasing stacked. Tests whether the two
+  corrections are complementary (orthogonal effects) or double-correcting.
+- **{variant_labels.get('v1_subtract', 'v1_subtract')}** — LEGACY/REFERENCE ONLY.
+  Treats the v1 bias as ground truth and subtracts it from each observation's
+  RA/Dec. Retained for reproducibility of bead `zgf` (commit 17026ca); should
+  *not* be used as a headline result.
+
+## Discussion: v1 sigma-floor + EFCC18 stacking
+
+For 2024 YR4 specifically, EFCC18 has a small effect in isolation (15 of 492
+observations are from catalogs EFCC18 covers — the rest are Gaia-DR2/3, ATLAS,
+or PS1 which postdate EFCC18). With that small fraction, the stacked
+`v1_sigma_floor + efcc18` variant is dominated by the v1 sigma-floor signal:
+the stacked ‖Δr‖ is essentially the v1 floor ‖Δr‖ minus a small EFCC18 nudge.
+Net: the stacked variant is very slightly better than v1 floor alone — and the
+EFCC18-only variant is very slightly better than the no-bias baseline — but
+both improvements are at the few-percent level on YR4 and are dwarfed by the
+sigma-floor's adverse direction. This object is not a useful test of whether
+v1 and EFCC18 double-correct; that question needs an older NEO with more
+legacy-catalog observations.
 
 ## Caveats
 
-- **v1 is pre-EFCC18**: JPL applies the EFCC18 star-catalog debiasing upstream
-  of its fit; v1 station biases here are measured against MPC RA/Dec with no
-  star-catalog correction. Comparing a v1-treated fit to JPL therefore
-  confounds star-catalog and station systematics.
+- **v1 is pre-EFCC18 by construction**: v1 station biases were measured against
+  raw MPC RA/Dec (no star-catalog debiasing applied upstream). JPL applies
+  EFCC18 in its own fit. Comparing any v1-only variant against JPL therefore
+  confounds station systematics with star-catalog systematics. The stacked
+  `v1_sigma_floor + efcc18` variant is closer to apples-to-apples but still
+  imperfect because v1 itself was *fit* against pre-EFCC18 residuals.
 - v1 high-confidence bias table covers 544 stations (filtered n_obs ≥ 100 AND
   n_objects ≥ 20). Stations outside this set get no sigma-floor.
-- Bias keyed by station only (no astcat/program keying); per-program rows
-  await `43z` in the parent workspace.
+- v1 bias is keyed by station only (no astcat/program keying); per-program
+  rows await `43z` in the parent workspace.
+- Single-object study; n=1 is not a verdict on either catalog. Per-station
+  variation makes one well-observed object weak evidence for or against the
+  catalog as a whole.
 - Impact-probability propagation deferred — no FindOrb covariance plumbing.
 
 ## Files in this directory
 
 - `observations.parquet` — full MPCObservations for {designation}
-- `no_bias_orbit.parquet`, `v1_bias_orbit.parquet`, `veres_only_orbit.parquet`
-  — adam_fo fits for each variant
+- adam_fo fits, one per variant:
+  `no_bias_orbit.parquet`, `veres_only_orbit.parquet`,
+  `v1_bias_orbit.parquet`, `efcc18_only_orbit.parquet`,
+  `v1_sigma_floor_efcc18_orbit.parquet`, `v1_subtract_orbit.parquet`
+- per-variant gap rows:
+  `comparison_baseline.parquet`, `comparison_veres.parquet`,
+  `comparison_v1_bias.parquet`, `comparison_efcc18.parquet`,
+  `comparison_v1_efcc18.parquet`, `comparison_v1_subtract.parquet`
 - `jpl_orbit.parquet` — JPL/SBDB nominal
-- `comparison_baseline.parquet`, `comparison_v1_bias.parquet`,
-  `comparison_veres.parquet` — per-variant gap rows
-- `comparison_summary.parquet` — all variants in one table
+- `comparison_summary.parquet` — all six variants in one table
+- `summary.json` — machine-readable headline numbers
 """
     (output_dir / "REPORT.md").write_text(md)
 
 
 VARIANT_OUTPUT_NAMES = {
     "no_bias": ("no_bias_orbit.parquet", "comparison_baseline.parquet"),
-    "v1_sigma_floor": ("v1_bias_orbit.parquet", "comparison_v1_bias.parquet"),
     "veres_only": ("veres_only_orbit.parquet", "comparison_veres.parquet"),
+    "v1_sigma_floor": ("v1_bias_orbit.parquet", "comparison_v1_bias.parquet"),
+    "efcc18_only": ("efcc18_only_orbit.parquet", "comparison_efcc18.parquet"),
+    "v1_sigma_floor+efcc18": (
+        "v1_sigma_floor_efcc18_orbit.parquet",
+        "comparison_v1_efcc18.parquet",
+    ),
+    "v1_subtract": ("v1_subtract_orbit.parquet", "comparison_v1_subtract.parquet"),
 }
 
 
@@ -465,6 +519,32 @@ def main() -> int:
         obs_summary["n_obs_with_bias_applied"],
     )
 
+    # Pre-compute the EFCC18 catalog-debias correction once; reused by all
+    # EFCC18-enabled variants. Most YR4 obs use post-EFCC18 catalogs (Gaia DR2/
+    # DR3, ATLAS, PS1) and will get a zero correction — that's expected.
+    astcats = obs.astcat.to_pylist()
+    n_efcc18_covered = n_observations_covered(astcats)
+    obs_summary["n_obs_with_efcc18_correction"] = n_efcc18_covered
+    obs_summary["frac_obs_with_efcc18_correction"] = (
+        n_efcc18_covered / obs_summary["n_obs_total"]
+        if obs_summary["n_obs_total"]
+        else 0.0
+    )
+    logger.info(
+        "EFCC18 coverage: %d of %d obs (%.1f%%) — most YR4 obs use post-EFCC18 catalogs",
+        n_efcc18_covered,
+        obs_summary["n_obs_total"],
+        100.0 * obs_summary["frac_obs_with_efcc18_correction"],
+    )
+    efcc18_bias_table = load_efcc18_biases()
+    efcc18_corrections = compute_efcc18_corrections(
+        obs.ra.to_numpy(zero_copy_only=False),
+        obs.dec.to_numpy(zero_copy_only=False),
+        astcats,
+        obs.obstime.jd().to_numpy(zero_copy_only=False),
+        bias_table=efcc18_bias_table,
+    )
+
     # Step 2 — JPL/SBDB orbit (fetched once, shared across variants)
     if args.reuse_existing and jpl_path.exists():
         logger.info("Reusing existing JPL orbit at %s", jpl_path)
@@ -480,12 +560,14 @@ def main() -> int:
     # Step 3 — fit each variant, propagate to JPL epoch, compute gap
     variant_labels: Dict[str, str] = {}
     gaps_by_variant: Dict[str, OrbitGap] = {}
-    for vid, vlabel, sigma_model, bias_application, use_bias_table in VARIANT_CONFIGS:
+    for cfg in VARIANT_CONFIGS:
+        vid, vlabel, sigma_model, bias_application, use_bias_table, use_efcc18 = cfg
         variant_labels[vid] = vlabel
         orbit_fname, cmp_fname = VARIANT_OUTPUT_NAMES[vid]
         orbit_path = args.output_dir / orbit_fname
         cmp_path = args.output_dir / cmp_fname
         active_bias_table = bias_table if use_bias_table else None
+        active_efcc18 = efcc18_corrections if use_efcc18 else None
 
         with tempfile.TemporaryDirectory(prefix=f"yr4_fo_{vid}_") as fo_dir:
             if args.reuse_existing and orbit_path.exists():
@@ -493,11 +575,13 @@ def main() -> int:
                 variant_orbit = Orbits.from_parquet(orbit_path)
             else:
                 logger.info(
-                    "Fitting %s via adam_fo (sigma_model=%s, bias_application=%s, bias=%s)…",
+                    "Fitting %s via adam_fo (sigma_model=%s, bias_application=%s, "
+                    "bias=%s, efcc18=%s)…",
                     vid,
                     sigma_model,
                     bias_application,
                     "yes" if use_bias_table else "no",
+                    "yes" if use_efcc18 else "no",
                 )
                 fitted, _ = fit_orbit(
                     args.designation,
@@ -506,6 +590,7 @@ def main() -> int:
                     fo_dir,
                     sigma_model=sigma_model,
                     bias_application=bias_application,
+                    catalog_debias_arcsec=active_efcc18,
                 )
                 variant_orbit = fitted.to_orbits()
                 variant_orbit.to_parquet(orbit_path)

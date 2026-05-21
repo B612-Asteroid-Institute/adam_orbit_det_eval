@@ -5,7 +5,7 @@
 groups = ["default", "test"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:6bcf6103c9a86d40c08d495fb9294d1cca9d451b6c1a3840215b37426f18b3e6"
+content_hash = "sha256:95b8b3a699c03d0fba2b6f882bbb7f5c6f88e5eceaf570dde3035ef4f76fd37e"
 
 [[metadata.targets]]
 requires_python = ">=3.11,<3.13"
@@ -1833,21 +1833,21 @@ files = [
 name = "mpcq"
 version = "0.4.0"
 requires_python = "<3.13,>=3.11"
+git = "https://github.com/B612-Asteroid-Institute/mpcq.git"
+ref = "42e447b"
+revision = "42e447b024a4c591e8173a38d36a6d9ede0f5c35"
 summary = "Client library for interacting with an MPC observations database"
 groups = ["default"]
 dependencies = [
-    "adam-core>=0.2.5",
+    "adam-core>=0.5.1",
     "astropy",
     "google-cloud-bigquery",
     "google-cloud-bigquery-storage>=2.27.0",
     "google-cloud-secret-manager",
     "numpy",
+    "pyarrow>=21.0.0",
     "quivr",
     "tqdm>=4.67.1",
-]
-files = [
-    {file = "mpcq-0.4.0-py3-none-any.whl", hash = "sha256:09b5e1c9dd249b8b744985e99e1d6d851ed2882ddde9f40e299caca493381f81"},
-    {file = "mpcq-0.4.0.tar.gz", hash = "sha256:9e287de9f04e8132cd9cc48c0102e24e9a7d9b70f85904547c85e0f85a62c989"},
 ]
 
 [[package]]

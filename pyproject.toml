@@ -29,7 +29,7 @@ dependencies = [
   "pyarrow>=13.0.0",
   "quivr>=0.8.1",
   "mpc-obscodes>=2026.3.25",
-  "mpcq",
+  "mpcq @ git+https://github.com/B612-Asteroid-Institute/mpcq.git@42e447b",
   "ipykernel",
   "ipywidgets",
   "matplotlib>=3.10.1",

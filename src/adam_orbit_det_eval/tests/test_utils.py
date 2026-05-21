@@ -282,6 +282,125 @@ def test_mpc_to_od_observations_catalog_debias_round_trip() -> None:
         raise AssertionError("Expected ValueError for shape mismatch")
 
 
+def test_mpc_to_od_observations_bias_rss_additive() -> None:
+    """rss_additive mode: σ_used = sqrt(σ_baseline² + bias²) per axis."""
+    ra_deg = 50.0
+    dec_deg = 0.0  # cos(dec)=1 so RA σ math is direct
+    stn = "Z99"
+    # baseline σ_ra = σ_dec = 0.5"
+    obs = _make_synthetic_obs(ra_deg=ra_deg, dec_deg=dec_deg, stn=stn)
+    bias_ra_arcsec = 1.2
+    bias_dec_arcsec = 0.3
+
+    od = mpc_to_od_observations(
+        obs,
+        prevent_nans=False,
+        bias_table={stn: (bias_ra_arcsec, bias_dec_arcsec)},
+        bias_application="rss_additive",
+    )
+    assert od is not None
+    sigmas_deg = od.coordinates.covariance.sigmas
+    cos_dec = np.cos(np.deg2rad(dec_deg))
+    expected_ra_arcsec = float(np.sqrt(0.5**2 + bias_ra_arcsec**2))
+    expected_dec_arcsec = float(np.sqrt(0.5**2 + bias_dec_arcsec**2))
+    np.testing.assert_allclose(
+        sigmas_deg[0, 1] * cos_dec * 3600.0, expected_ra_arcsec, rtol=1e-9
+    )
+    np.testing.assert_allclose(
+        sigmas_deg[0, 2] * 3600.0, expected_dec_arcsec, rtol=1e-9
+    )
+    # Position untouched
+    np.testing.assert_allclose(
+        od.coordinates.lon.to_numpy(zero_copy_only=False), [ra_deg], atol=1e-12
+    )
+    np.testing.assert_allclose(
+        od.coordinates.lat.to_numpy(zero_copy_only=False), [dec_deg], atol=1e-12
+    )
+
+
+def test_mpc_to_od_observations_bias_performance_weighted() -> None:
+    """performance_weighted: σ_used = σ_baseline × sqrt(max(chi2, 1.0))."""
+    ra_deg = 50.0
+    dec_deg = 0.0
+    stn = "Z99"
+    obs = _make_synthetic_obs(ra_deg=ra_deg, dec_deg=dec_deg, stn=stn)
+
+    # chi2 = 9.0 → factor = 3.0 → σ_used = 0.5 × 3 = 1.5"
+    od = mpc_to_od_observations(
+        obs,
+        prevent_nans=False,
+        bias_table={stn: (0.0, 0.0)},  # unused for performance_weighted
+        bias_application="performance_weighted",
+        station_chi2_per_obs={stn: 9.0},
+    )
+    assert od is not None
+    sigmas_deg = od.coordinates.covariance.sigmas
+    cos_dec = np.cos(np.deg2rad(dec_deg))
+    np.testing.assert_allclose(
+        sigmas_deg[0, 1] * cos_dec * 3600.0, 1.5, rtol=1e-9
+    )
+    np.testing.assert_allclose(sigmas_deg[0, 2] * 3600.0, 1.5, rtol=1e-9)
+
+    # chi2 < 1 → factor clipped at 1 → σ unchanged at 0.5"
+    od_low_chi2 = mpc_to_od_observations(
+        obs,
+        prevent_nans=False,
+        bias_table=None,
+        bias_application="performance_weighted",
+        station_chi2_per_obs={stn: 0.25},
+    )
+    assert od_low_chi2 is not None
+    sigmas_low = od_low_chi2.coordinates.covariance.sigmas
+    np.testing.assert_allclose(
+        sigmas_low[0, 1] * cos_dec * 3600.0, 0.5, rtol=1e-9
+    )
+    np.testing.assert_allclose(sigmas_low[0, 2] * 3600.0, 0.5, rtol=1e-9)
+
+    # Station not in chi2 dict → factor = 1
+    od_absent = mpc_to_od_observations(
+        obs,
+        prevent_nans=False,
+        bias_table=None,
+        bias_application="performance_weighted",
+        station_chi2_per_obs={"OTHER": 100.0},
+    )
+    sigmas_absent = od_absent.coordinates.covariance.sigmas
+    np.testing.assert_allclose(
+        sigmas_absent[0, 1] * cos_dec * 3600.0, 0.5, rtol=1e-9
+    )
+
+    # Missing station_chi2_per_obs → ValueError
+    try:
+        mpc_to_od_observations(
+            obs, prevent_nans=False, bias_application="performance_weighted"
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Expected ValueError for missing station_chi2_per_obs")
+
+
+def test_mpc_to_od_observations_sigma_model_uniform() -> None:
+    """sigma_model='uniform': every obs gets σ_ra=σ_dec=uniform_sigma_arcsec."""
+    obs = _make_synthetic_obs(ra_deg=12.0, dec_deg=-20.0, stn="Z99")
+    od = mpc_to_od_observations(
+        obs, prevent_nans=False, sigma_model="uniform", uniform_sigma_arcsec=0.75
+    )
+    assert od is not None
+    sigmas_deg = od.coordinates.covariance.sigmas
+    cos_dec = np.cos(np.deg2rad(-20.0))
+    np.testing.assert_allclose(
+        sigmas_deg[0, 1] * cos_dec * 3600.0, 0.75, rtol=1e-9
+    )
+    np.testing.assert_allclose(sigmas_deg[0, 2] * 3600.0, 0.75, rtol=1e-9)
+
+    # Default uniform_sigma_arcsec is 0.5
+    od_default = mpc_to_od_observations(obs, prevent_nans=False, sigma_model="uniform")
+    sd = od_default.coordinates.covariance.sigmas
+    np.testing.assert_allclose(sd[0, 1] * cos_dec * 3600.0, 0.5, rtol=1e-9)
+    np.testing.assert_allclose(sd[0, 2] * 3600.0, 0.5, rtol=1e-9)
+
+
 def test_mpc_to_od_observations_sigma_model_veres2017_fills_missing() -> None:
     """When MPC sigmas are missing, sigma_model='veres2017' fills from the lookup."""
     obs_time = Timestamp.from_iso8601(["2024-01-01T00:00:00"], scale="utc")

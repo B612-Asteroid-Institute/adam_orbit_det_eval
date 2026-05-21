@@ -127,6 +127,8 @@ def mpc_to_od_observations(
     sigma_model: str = "const",
     bias_application: str = "sigma_floor",
     catalog_debias_arcsec: Optional[np.ndarray] = None,
+    uniform_sigma_arcsec: float = 0.5,
+    station_chi2_per_obs: Optional[Dict[str, float]] = None,
 ) -> Optional[OrbitDeterminationObservations]:
     """
     Convert MPC observations into OD observations.
@@ -157,20 +159,27 @@ def mpc_to_od_observations(
                           sigmas are untouched.
     bias_application: str, default 'sigma_floor'
       Only consulted when ``bias_table`` is supplied. How to use the bias:
-        ``'sigma_floor'`` — *Recommended.* Treat the catalog like Veres 2017: for
-                            every observation from a station in the table, floor
-                            the per-axis sigma at ``|bias|`` so biased stations
-                            get downweighted in the fit:
-                              sigma_ra_used  = max(sigma_ra_reported,  |bias_ra|)
-                              sigma_dec_used = max(sigma_dec_reported, |bias_dec|)
-                            RA/Dec are NOT modified.
-        ``'subtract'``    — *Legacy.* Subtract the bias from the observation
-                            position, leaving sigmas untouched:
-                              corrected_dec = obs_dec - bias_dec / 3600
-                              corrected_ra  = obs_ra  - (bias_ra / 3600) / cos(dec)
-                            This treats the bias estimate as ground truth and was
-                            judged too aggressive in the YR4 baseline experiment;
-                            kept for reproducibility/A-B comparison.
+        ``'sigma_floor'``           — *Recommended.* For each station in the
+                                      table, floor the per-axis sigma at
+                                      ``|bias|`` (``σ_used = max(σ_reported,
+                                      |bias|)``). Downweights biased stations
+                                      without modifying RA/Dec.
+        ``'rss_additive'``          — σ_used = sqrt(σ_baseline² + bias²) per
+                                      axis. Softer than the max-floor when
+                                      σ_baseline >> |bias|; equivalent to
+                                      sigma_floor when σ_baseline << |bias|.
+        ``'performance_weighted'``  — σ_used = σ_baseline × sqrt(max(
+                                      chi2_per_obs, 1.0)). Inflates sigma by
+                                      the station's measured residual scatter
+                                      (from v1's ``chi2_per_obs`` column).
+                                      Requires ``station_chi2_per_obs`` to be
+                                      supplied. Stations not in the chi2 dict
+                                      get factor = 1 (unchanged).
+        ``'subtract'``              — *Legacy/reference.* Subtract the bias
+                                      from the observation position. Treats
+                                      the bias as ground truth; too aggressive
+                                      in principle but retained as a baseline
+                                      anchor.
     catalog_debias_arcsec: ndarray of shape (N, 2) or None, default None
       Optional per-observation star-catalog debiasing correction. Each row is
       ``(bias_ra_cosdec_arcsec, bias_dec_arcsec)`` and is subtracted from the
@@ -180,16 +189,34 @@ def mpc_to_od_observations(
       Intended consumer: per-(RA, Dec, astcat, JD) EFCC18 corrections computed
       via :func:`adam_orbit_det_eval.efcc18.compute_efcc18_corrections`. Stations/
       catalogs with no available correction should be passed in as 0.0 rows.
+    uniform_sigma_arcsec: float, default 0.5
+      Used only when ``sigma_model='uniform'``: every observation gets
+      ``σ_ra_cosdec = σ_dec = uniform_sigma_arcsec`` regardless of the MPC
+      sigma column or any other input. Diagnostic mode for testing whether
+      per-obs weighting matters at all.
+    station_chi2_per_obs: dict[str, float] or None, default None
+      Used only when ``bias_application='performance_weighted'``. Maps station
+      ``obs_code`` to ``chi2_per_obs`` from the v1 bias catalog. Stations
+      absent from the dict are not inflated (factor = 1).
 
     Returns:
     --------
     Set of observations for orbit determination, size N, or None if the input set is
     malformed, for example, it has NULLs in the STN codes.
     """
-    if bias_application not in ("sigma_floor", "subtract"):
+    if bias_application not in (
+        "sigma_floor",
+        "subtract",
+        "rss_additive",
+        "performance_weighted",
+    ):
         raise ValueError(
-            f"Unknown bias_application={bias_application!r}; "
-            "expected 'sigma_floor' or 'subtract'"
+            f"Unknown bias_application={bias_application!r}; expected one of "
+            "'sigma_floor', 'subtract', 'rss_additive', 'performance_weighted'"
+        )
+    if bias_application == "performance_weighted" and station_chi2_per_obs is None:
+        raise ValueError(
+            "bias_application='performance_weighted' requires station_chi2_per_obs"
         )
     obs_time = obs_set.obstime
     codes = obs_set.stn
@@ -234,9 +261,19 @@ def mpc_to_od_observations(
                     sigma_ra_cosdec_arcsec[i] = v_ra
                 if dec_bad:
                     sigma_dec_arcsec[i] = v_dec
+    elif sigma_model == "uniform":
+        # Override every observation's sigma with the uniform value, regardless
+        # of MPC reports. Diagnostic mode.
+        if uniform_sigma_arcsec <= 0:
+            raise ValueError(
+                f"uniform_sigma_arcsec must be > 0, got {uniform_sigma_arcsec}"
+            )
+        sigma_ra_cosdec_arcsec[:] = uniform_sigma_arcsec
+        sigma_dec_arcsec[:] = uniform_sigma_arcsec
     elif sigma_model != "const":
         raise ValueError(
-            f"Unknown sigma_model={sigma_model!r}; expected 'const' or 'veres2017'"
+            f"Unknown sigma_model={sigma_model!r}; expected one of "
+            "'const', 'veres2017', 'uniform'"
         )
 
     if bias_table is not None and bias_application == "sigma_floor":
@@ -256,6 +293,41 @@ def mpc_to_od_observations(
                 sigma_ra_cosdec_arcsec[i] = bra
             if (not np.isfinite(cur_dec)) or cur_dec < bdec:
                 sigma_dec_arcsec[i] = bdec
+    elif bias_table is not None and bias_application == "rss_additive":
+        # Combine the baseline sigma and the bias in quadrature. Acts like
+        # sigma_floor when bias dominates and like a no-op when sigma_baseline
+        # dominates. Missing/non-positive baseline sigmas are treated as 0 so
+        # the result becomes |bias| (matching sigma_floor in that limit).
+        stns_list = obs_set.stn.to_pylist()
+        for i, code in enumerate(stns_list):
+            entry = bias_table.get(code)
+            if entry is None:
+                continue
+            bra = float(abs(entry[0]))
+            bdec = float(abs(entry[1]))
+            cur_ra = sigma_ra_cosdec_arcsec[i]
+            cur_dec = sigma_dec_arcsec[i]
+            base_ra = cur_ra if np.isfinite(cur_ra) and cur_ra > 0 else 0.0
+            base_dec = cur_dec if np.isfinite(cur_dec) and cur_dec > 0 else 0.0
+            sigma_ra_cosdec_arcsec[i] = float(np.sqrt(base_ra * base_ra + bra * bra))
+            sigma_dec_arcsec[i] = float(np.sqrt(base_dec * base_dec + bdec * bdec))
+    elif bias_application == "performance_weighted":
+        # Per-station chi2_per_obs from the v1 catalog acts as a multiplicative
+        # sigma scale: σ_used = σ_baseline × sqrt(max(chi2, 1)). Stations not in
+        # the dict get factor = 1 (unchanged).
+        assert station_chi2_per_obs is not None  # validated above
+        stns_list = obs_set.stn.to_pylist()
+        for i, code in enumerate(stns_list):
+            chi2 = station_chi2_per_obs.get(code)
+            if chi2 is None or not np.isfinite(chi2):
+                continue
+            factor = float(np.sqrt(max(float(chi2), 1.0)))
+            cur_ra = sigma_ra_cosdec_arcsec[i]
+            cur_dec = sigma_dec_arcsec[i]
+            if np.isfinite(cur_ra) and cur_ra > 0:
+                sigma_ra_cosdec_arcsec[i] = cur_ra * factor
+            if np.isfinite(cur_dec) and cur_dec > 0:
+                sigma_dec_arcsec[i] = cur_dec * factor
 
     sigma_ra_cosdec_deg = sigma_ra_cosdec_arcsec / 3600.0
     sigma_dec_deg = sigma_dec_arcsec / 3600.0

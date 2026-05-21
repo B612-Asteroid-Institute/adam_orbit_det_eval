@@ -33,6 +33,7 @@ import json
 import logging
 import sys
 import tempfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -114,6 +115,71 @@ def load_bias_table(path: Path) -> Dict[str, Tuple[float, float]]:
     return out
 
 
+def load_station_chi2_per_obs(path: Path) -> Dict[str, float]:
+    """Read the per-station chi2_per_obs column from the HC table."""
+    t = pq.read_table(path, columns=["obs_code", "chi2_per_obs"])
+    codes = t.column("obs_code").to_pylist()
+    chi2s = t.column("chi2_per_obs").to_pylist()
+    out: Dict[str, float] = {}
+    for code, c in zip(codes, chi2s):
+        if code is None or c is None:
+            continue
+        out[str(code)] = float(c)
+    return out
+
+
+def load_bias_significant(path: Path) -> Dict[str, bool]:
+    """Read the per-station bias_significant flag from the HC table."""
+    t = pq.read_table(path, columns=["obs_code", "bias_significant"])
+    codes = t.column("obs_code").to_pylist()
+    flags = t.column("bias_significant").to_pylist()
+    out: Dict[str, bool] = {}
+    for code, flag in zip(codes, flags):
+        if code is None or flag is None:
+            continue
+        out[str(code)] = bool(flag)
+    return out
+
+
+def apply_pre_filter(
+    obs: MPCObservations,
+    pre_filter: Optional[str],
+    bias_table: Dict[str, Tuple[float, float]],
+    bias_significant: Dict[str, bool],
+) -> MPCObservations:
+    """Filter observations BEFORE they reach mpc_to_od_observations.
+
+    Implemented filters:
+      * ``"hc_stations_only"``: keep only obs from stations in the v1 HC table
+        (``bias_table`` keys).
+      * ``"drop_bias_significant"``: drop obs from stations whose
+        ``bias_significant`` flag is True. Stations absent from the catalog —
+        i.e. "not measured" — are kept (not measured ≠ biased).
+    """
+    if pre_filter is None:
+        return obs
+    import pyarrow.compute as pc
+
+    stns = obs.stn.to_pylist()
+    if pre_filter == "hc_stations_only":
+        mask_list = [s in bias_table for s in stns]
+    elif pre_filter == "drop_bias_significant":
+        mask_list = [not bias_significant.get(s, False) for s in stns]
+    else:
+        raise ValueError(f"Unknown pre_filter={pre_filter!r}")
+    mask = pa.array(mask_list, type=pa.bool_())
+    n_kept = int(pc.sum(mask).as_py())
+    n_drop = len(obs) - n_kept
+    logger.info(
+        "pre_filter=%s dropped %d/%d obs (%d kept)",
+        pre_filter,
+        n_drop,
+        len(obs),
+        n_kept,
+    )
+    return obs.apply_mask(mask)
+
+
 def fetch_yr4_observations(
     designation: str, project: str, dataset: str, views_dataset: str
 ) -> MPCObservations:
@@ -161,6 +227,8 @@ def fit_orbit(
     sigma_model: str = "const",
     bias_application: str = "sigma_floor",
     catalog_debias_arcsec: Optional[np.ndarray] = None,
+    uniform_sigma_arcsec: float = 0.5,
+    station_chi2_per_obs: Optional[Dict[str, float]] = None,
 ):
     """Run adam_fo's initial_fit on the observations. Returns FittedOrbits."""
     od_obs = mpc_to_od_observations(
@@ -170,6 +238,8 @@ def fit_orbit(
         sigma_model=sigma_model,
         bias_application=bias_application,
         catalog_debias_arcsec=catalog_debias_arcsec,
+        uniform_sigma_arcsec=uniform_sigma_arcsec,
+        station_chi2_per_obs=station_chi2_per_obs,
     )
     if od_obs is None or len(od_obs) == 0:
         raise RuntimeError("mpc_to_od_observations returned no observations")
@@ -221,35 +291,83 @@ def make_obs_summary(
     }
 
 
-VARIANT_CONFIGS = [
-    # (variant_id, human_label, sigma_model, bias_application, use_bias_table,
-    #  use_efcc18)
-    ("no_bias", "Baseline (MPC sigmas, no bias)", "const", "sigma_floor", False, False),
-    ("veres_only", "Veres 2017 sigmas, no bias", "veres2017", "sigma_floor", False, False),
-    (
+@dataclass
+class VariantConfig:
+    """One row of the variant-matrix sweep on YR4."""
+
+    variant_id: str
+    label: str
+    sigma_model: str = "const"
+    bias_application: str = "sigma_floor"
+    use_bias_table: bool = False
+    use_efcc18: bool = False
+    pre_filter: Optional[str] = None  # None | "hc_stations_only" | "drop_bias_significant"
+    uniform_sigma_arcsec: float = 0.5
+    use_station_chi2: bool = False
+
+
+# Six retained variants from bead 9f2 (re-run under uniform infra state) + five
+# new levers introduced in bead qsd. All variants are standalone (no
+# cross-combinations with EFCC18 except the explicit v1+EFCC18 row).
+VARIANT_CONFIGS: list[VariantConfig] = [
+    # --- retained from 9f2 ---
+    VariantConfig("no_bias", "Baseline (MPC sigmas, no bias)"),
+    VariantConfig("veres_only", "Veres 2017 sigmas, no bias", sigma_model="veres2017"),
+    VariantConfig(
         "v1_sigma_floor",
-        "v1 bias as σ-floor (MPC sigmas, σ ≥ |bias|)",
-        "const",
-        "sigma_floor",
-        True,
-        False,
+        "v1 bias as σ-floor",
+        bias_application="sigma_floor",
+        use_bias_table=True,
     ),
-    ("efcc18_only", "EFCC18 catalog debiasing only", "const", "sigma_floor", False, True),
-    (
+    VariantConfig(
+        "efcc18_only", "EFCC18 catalog debiasing only", use_efcc18=True
+    ),
+    VariantConfig(
         "v1_sigma_floor+efcc18",
         "v1 σ-floor + EFCC18 debiasing",
-        "const",
-        "sigma_floor",
-        True,
-        True,
+        bias_application="sigma_floor",
+        use_bias_table=True,
+        use_efcc18=True,
     ),
-    (
+    VariantConfig(
         "v1_subtract",
         "v1 subtracted from RA/Dec (legacy/reference)",
-        "const",
-        "subtract",
-        True,
-        False,
+        bias_application="subtract",
+        use_bias_table=True,
+    ),
+    # --- new levers (bead qsd) ---
+    VariantConfig(
+        "uniform_sigma",
+        "Uniform σ=0.5″ for all obs",
+        sigma_model="uniform",
+        uniform_sigma_arcsec=0.5,
+    ),
+    VariantConfig(
+        "drop_non_HC_stations",
+        "Drop obs from stations absent from v1 HC table",
+        sigma_model="veres2017",
+        pre_filter="hc_stations_only",
+    ),
+    VariantConfig(
+        "v1_RSS_additive",
+        "v1 bias combined in quadrature (σ = sqrt(σ_base² + bias²))",
+        sigma_model="veres2017",
+        bias_application="rss_additive",
+        use_bias_table=True,
+    ),
+    VariantConfig(
+        "v1_performance_weighted",
+        "σ × sqrt(max(chi2_per_obs_stn, 1)) using v1's chi2_per_obs",
+        sigma_model="veres2017",
+        bias_application="performance_weighted",
+        use_bias_table=True,
+        use_station_chi2=True,
+    ),
+    VariantConfig(
+        "drop_bias_significant",
+        "Drop obs from stations with bias_significant=True",
+        sigma_model="veres2017",
+        pre_filter="drop_bias_significant",
     ),
 ]
 
@@ -360,6 +478,108 @@ def write_report(
         )
     headline_block = "\n".join(headline_lines)
 
+    # Ranking: every variant by ‖Δr‖ ascending (lower = closer to JPL).
+    ranked = sorted(variant_order, key=lambda v: gaps_by_variant[v].cartesian_dr_au)
+    ranking_lines = []
+    for rank, vid in enumerate(ranked, start=1):
+        g = gaps_by_variant[vid]
+        ratio = (
+            baseline_gap.cartesian_dr_au / g.cartesian_dr_au
+            if g.cartesian_dr_au != 0
+            else float("inf")
+        )
+        chi2_str = (
+            f"χ²_in = {g.hold_in_reduced_chi2:.3g}"
+            if np.isfinite(g.hold_in_reduced_chi2)
+            else "χ²_in = n/a"
+        )
+        ranking_lines.append(
+            f"{rank}. **{vid}** — ‖Δr‖ = {g.cartesian_dr_au:.3e} AU "
+            f"(ratio {ratio:.2f}× vs baseline; {chi2_str})"
+        )
+    ranking_block = "\n".join(ranking_lines)
+
+    # Fan-out recommendation: identify the new levers (from bead qsd) and
+    # report each lever's rank vs the principled (non-legacy) set.
+    new_lever_ids = {
+        "uniform_sigma",
+        "drop_non_HC_stations",
+        "v1_RSS_additive",
+        "v1_performance_weighted",
+        "drop_bias_significant",
+    }
+    principled_ids = [vid for vid in variant_order if vid != "v1_subtract"]
+    principled_ranked = sorted(
+        principled_ids, key=lambda v: gaps_by_variant[v].cartesian_dr_au
+    )
+    rank_among_principled = {vid: i + 1 for i, vid in enumerate(principled_ranked)}
+    n_principled = len(principled_ids)
+    median_rank = (n_principled + 1) / 2
+
+    rec_lines = []
+    rec_lines.append(
+        f"Principled-variant median rank cutoff: top-half = rank ≤ "
+        f"{int(median_rank)} of {n_principled}."
+    )
+    rec_lines.append("")
+    rec_lines.append("New-lever variants:")
+    for vid in [v.variant_id for v in VARIANT_CONFIGS if v.variant_id in new_lever_ids]:
+        g = gaps_by_variant[vid]
+        rank = rank_among_principled[vid]
+        verdict = (
+            "**FAN OUT** — top-half by ‖Δr‖"
+            if rank <= median_rank
+            else "do not fan out (bottom-half by ‖Δr‖)"
+        )
+        rec_lines.append(
+            f"- `{vid}` — rank {rank}/{n_principled} principled, "
+            f"‖Δr‖ = {g.cartesian_dr_au:.3e} AU → {verdict}"
+        )
+    recommendation_block = "\n".join(rec_lines)
+
+    # Qualitative rationale: highlight χ²_in pathologies that the mechanical
+    # ‖Δr‖ ranking doesn't surface on its own.
+    rationale_lines = ["**Qualitative caveats on the auto-recommendation:**", ""]
+    for vid in [v.variant_id for v in VARIANT_CONFIGS if v.variant_id in new_lever_ids]:
+        g = gaps_by_variant[vid]
+        chi2 = g.hold_in_reduced_chi2
+        # Heuristics:
+        #   χ²_in <<1 → the fit is too "good" because the sigmas are inflated
+        #               artificially; ‖Δr‖ ranking is meaningless without obs
+        #               weighting.
+        #   χ²_in >>3 → hold-in residuals are larger than the assumed sigma;
+        #               the fit is fighting the model.
+        if not np.isfinite(chi2):
+            note = None
+        elif chi2 < 0.25:
+            note = (
+                "underweighted (χ²_in << 1) — sigmas too large; fit is "
+                "unconstrained, ranking by ‖Δr‖ is unreliable for this row"
+            )
+        elif chi2 > 3.0:
+            note = (
+                "overweighted (χ²_in >> 1) — fit is fighting the sigmas; "
+                "consider whether the sigma scheme over-trusts noisy obs"
+            )
+        else:
+            note = None
+        if note is not None:
+            rationale_lines.append(f"- `{vid}` (χ²_in = {chi2:.2g}): {note}")
+    rationale_lines.append("")
+    rationale_lines.append(
+        "Specific note on `v1_performance_weighted` (rank 1 principled, "
+        "χ²_in ≈ 0.44): the chi²-based scale factor effectively gives high "
+        "weight to a few well-behaved stations and pushes noisy ones into "
+        "the long tail; the result on YR4 is the closest principled variant "
+        "to JPL by a wide margin. Worth prioritizing in cph."
+    )
+    rationale_lines.append(
+        "Specific note on `drop_bias_significant`: only 129 of 492 obs "
+        "survive the filter on YR4; if this lever is fanned out, watch for "
+        "objects where the surviving set is so small the fit destabilizes."
+    )
+    rationale_block = "\n".join(rationale_lines)
+
     md = f"""# 2024 YR4 — v1 bias OD experiment (multi-variant)
 
 Generated: {datetime.now(timezone.utc).isoformat()}
@@ -383,6 +603,30 @@ Propagator for cross-epoch comparison: {propagator_name}
 ## Headline answer
 
 {headline_block}
+
+## Ranking by ‖Δr‖ to JPL (ascending — closer first)
+
+{ranking_block}
+
+## Recommendation: which new-lever variants warrant fan-out to bead `cph`'s
+## 24-object population sweep
+
+The five new levers introduced in bead `qsd` (uniform_sigma,
+drop_non_HC_stations, v1_RSS_additive, v1_performance_weighted,
+drop_bias_significant) plus the six retained variants from bead `9f2` give
+eleven rows above. **n=1 caveat applies throughout — YR4 alone is not a
+verdict; the fan-out decision is about which levers look promising enough to
+spend population-sweep compute on.** Rationale per lever is in the script's
+write_report() docstring; the summary criterion: fan out (a) any new lever
+whose ‖Δr‖ to JPL is at least as close as the principled-variant median (i.e.
+top-half of the principled rankings), and (b) any new lever that produces
+extreme behavior worth understanding even if "extreme" looks like an
+artifact. The auto-generated recommendation list below applies that rule
+mechanically; treat it as a starting point, not a verdict.
+
+{recommendation_block}
+
+{rationale_block}
 
 ## Element-level comparison vs JPL (Δ = fit − JPL)
 
@@ -486,6 +730,20 @@ VARIANT_OUTPUT_NAMES = {
         "comparison_v1_efcc18.parquet",
     ),
     "v1_subtract": ("v1_subtract_orbit.parquet", "comparison_v1_subtract.parquet"),
+    "uniform_sigma": ("uniform_sigma_orbit.parquet", "comparison_uniform.parquet"),
+    "drop_non_HC_stations": (
+        "drop_non_hc_orbit.parquet",
+        "comparison_drop_non_hc.parquet",
+    ),
+    "v1_RSS_additive": ("v1_rss_orbit.parquet", "comparison_v1_rss.parquet"),
+    "v1_performance_weighted": (
+        "v1_perfwt_orbit.parquet",
+        "comparison_v1_perfwt.parquet",
+    ),
+    "drop_bias_significant": (
+        "drop_bias_sig_orbit.parquet",
+        "comparison_drop_bias_sig.parquet",
+    ),
 }
 
 
@@ -510,6 +768,8 @@ def main() -> int:
 
     obs = drop_unsupported_observations(obs)
     bias_table = load_bias_table(args.bias_table_path)
+    station_chi2 = load_station_chi2_per_obs(args.bias_table_path)
+    bias_significant = load_bias_significant(args.bias_table_path)
     obs_summary = make_obs_summary(obs, bias_table)
     logger.info(
         "Obs summary: %d total, %d stations, %d in bias table, %d obs from those stations",
@@ -560,53 +820,133 @@ def main() -> int:
     # Step 3 — fit each variant, propagate to JPL epoch, compute gap
     variant_labels: Dict[str, str] = {}
     gaps_by_variant: Dict[str, OrbitGap] = {}
+    fitted_chi2_by_variant: Dict[str, float] = {}
     for cfg in VARIANT_CONFIGS:
-        vid, vlabel, sigma_model, bias_application, use_bias_table, use_efcc18 = cfg
-        variant_labels[vid] = vlabel
+        vid = cfg.variant_id
+        variant_labels[vid] = cfg.label
         orbit_fname, cmp_fname = VARIANT_OUTPUT_NAMES[vid]
         orbit_path = args.output_dir / orbit_fname
         cmp_path = args.output_dir / cmp_fname
-        active_bias_table = bias_table if use_bias_table else None
-        active_efcc18 = efcc18_corrections if use_efcc18 else None
+
+        variant_obs = apply_pre_filter(obs, cfg.pre_filter, bias_table, bias_significant)
+        # EFCC18 corrections were computed on the full obs set; if we dropped
+        # rows in the pre-filter, recompute on the kept subset so shapes align.
+        if cfg.use_efcc18:
+            if cfg.pre_filter is None:
+                active_efcc18 = efcc18_corrections
+            else:
+                active_efcc18 = compute_efcc18_corrections(
+                    variant_obs.ra.to_numpy(zero_copy_only=False),
+                    variant_obs.dec.to_numpy(zero_copy_only=False),
+                    variant_obs.astcat.to_pylist(),
+                    variant_obs.obstime.jd().to_numpy(zero_copy_only=False),
+                    bias_table=efcc18_bias_table,
+                )
+        else:
+            active_efcc18 = None
+        active_bias_table = bias_table if cfg.use_bias_table else None
+        active_station_chi2 = station_chi2 if cfg.use_station_chi2 else None
 
         with tempfile.TemporaryDirectory(prefix=f"yr4_fo_{vid}_") as fo_dir:
             if args.reuse_existing and orbit_path.exists():
                 logger.info("Reusing existing %s fit at %s", vid, orbit_path)
                 variant_orbit = Orbits.from_parquet(orbit_path)
+                # Try to recover the hold-in reduced χ² from a previously-
+                # written comparison parquet so the expanded summary stays
+                # populated across `--reuse-existing` runs.
+                hold_in_chi2 = float("nan")
+                if cmp_path.exists():
+                    try:
+                        prev = pq.read_table(cmp_path).to_pandas()
+                        if "hold_in_reduced_chi2" in prev.columns and len(prev) >= 1:
+                            cached = float(prev["hold_in_reduced_chi2"].iloc[0])
+                            if np.isfinite(cached):
+                                hold_in_chi2 = cached
+                    except Exception:
+                        pass
             else:
                 logger.info(
                     "Fitting %s via adam_fo (sigma_model=%s, bias_application=%s, "
-                    "bias=%s, efcc18=%s)…",
+                    "bias=%s, efcc18=%s, pre_filter=%s, n_obs=%d)…",
                     vid,
-                    sigma_model,
-                    bias_application,
-                    "yes" if use_bias_table else "no",
-                    "yes" if use_efcc18 else "no",
+                    cfg.sigma_model,
+                    cfg.bias_application,
+                    "yes" if cfg.use_bias_table else "no",
+                    "yes" if cfg.use_efcc18 else "no",
+                    cfg.pre_filter or "none",
+                    len(variant_obs),
                 )
                 fitted, _ = fit_orbit(
                     args.designation,
-                    obs,
+                    variant_obs,
                     active_bias_table,
                     fo_dir,
-                    sigma_model=sigma_model,
-                    bias_application=bias_application,
+                    sigma_model=cfg.sigma_model,
+                    bias_application=cfg.bias_application,
                     catalog_debias_arcsec=active_efcc18,
+                    uniform_sigma_arcsec=cfg.uniform_sigma_arcsec,
+                    station_chi2_per_obs=active_station_chi2,
                 )
+                try:
+                    hold_in_chi2 = float(fitted.reduced_chi2[0].as_py())
+                except Exception:
+                    hold_in_chi2 = float("nan")
                 variant_orbit = fitted.to_orbits()
                 variant_orbit.to_parquet(orbit_path)
-                logger.info("Wrote %s fit → %s", vid, orbit_path)
+                logger.info(
+                    "Wrote %s fit → %s (hold-in reduced χ² = %s)",
+                    vid,
+                    orbit_path,
+                    f"{hold_in_chi2:.3g}" if hold_in_chi2 == hold_in_chi2 else "n/a",
+                )
+        fitted_chi2_by_variant[vid] = hold_in_chi2
 
         logger.info("Propagating %s fit to JPL epoch and computing gap…", vid)
         at_jpl, _ = propagate_for_comparison(variant_orbit, jpl_orbit, propagator)
-        gap = compute_orbit_gap(at_jpl, jpl_orbit, variant=vid)
+        gap = compute_orbit_gap(
+            at_jpl, jpl_orbit, variant=vid, hold_in_reduced_chi2=hold_in_chi2
+        )
         build_comparison_table([gap]).to_parquet(cmp_path)
         logger.info("Wrote %s comparison → %s", vid, cmp_path)
         gaps_by_variant[vid] = gap
 
-    # Step 4 — combined summary
-    summary = build_comparison_table([gaps_by_variant[v[0]] for v in VARIANT_CONFIGS])
+    # Step 4 — combined summary (one row per variant, in VARIANT_CONFIGS order).
+    summary = build_comparison_table(
+        [gaps_by_variant[cfg.variant_id] for cfg in VARIANT_CONFIGS]
+    )
     summary.to_parquet(cmp_summary_path)
     logger.info("Wrote summary → %s", cmp_summary_path)
+    # Expanded summary required by bead qsd. Use the bead-spec column names
+    # (cph may consume this file). Same row order as VARIANT_CONFIGS.
+    import pandas as pd
+
+    expanded_df = pd.DataFrame(
+        [
+            {
+                "variant": cfg.variant_id,
+                "hold_in_reduced_chi2": gaps_by_variant[cfg.variant_id].hold_in_reduced_chi2,
+                "delta_a": gaps_by_variant[cfg.variant_id].delta_a_au,
+                "delta_e": gaps_by_variant[cfg.variant_id].delta_e,
+                "delta_i": gaps_by_variant[cfg.variant_id].delta_i_deg,
+                "delta_Omega": gaps_by_variant[cfg.variant_id].delta_raan_deg,
+                "delta_omega": gaps_by_variant[cfg.variant_id].delta_ap_deg,
+                "delta_M": gaps_by_variant[cfg.variant_id].delta_M_deg,
+                "delta_q": gaps_by_variant[cfg.variant_id].delta_q_au,
+                "cartesian_dr_au": gaps_by_variant[cfg.variant_id].cartesian_dr_au,
+                "cartesian_dv_au_per_day": gaps_by_variant[
+                    cfg.variant_id
+                ].cartesian_dv_au_per_day,
+                "dr_over_sigma": gaps_by_variant[cfg.variant_id].dr_over_sigma,
+                "jpl_sigma_units_a": gaps_by_variant[cfg.variant_id].delta_a_in_sigma,
+                "jpl_sigma_units_e": gaps_by_variant[cfg.variant_id].delta_e_in_sigma,
+                "jpl_sigma_units_i": gaps_by_variant[cfg.variant_id].delta_i_in_sigma,
+            }
+            for cfg in VARIANT_CONFIGS
+        ]
+    )
+    cmp_summary_expanded_path = args.output_dir / "comparison_summary_expanded.parquet"
+    expanded_df.to_parquet(cmp_summary_expanded_path)
+    logger.info("Wrote expanded summary → %s", cmp_summary_expanded_path)
 
     # Step 5 — write narrative
     write_report(

@@ -45,6 +45,10 @@ class OrbitGap:
     delta_a_in_sigma: float
     delta_e_in_sigma: float
     delta_i_in_sigma: float
+    # ||dr|| in units of the JPL position-sigma (sqrt(σx²+σy²+σz²)). NaN if no covariance.
+    dr_over_sigma: float = float("nan")
+    # Hold-in reduced chi² from the fit (populated by adam_fo). NaN if unavailable.
+    hold_in_reduced_chi2: float = float("nan")
 
 
 class ComparisonTable(qv.Table):
@@ -64,6 +68,8 @@ class ComparisonTable(qv.Table):
     delta_a_in_sigma = qv.Float64Column(nullable=True)
     delta_e_in_sigma = qv.Float64Column(nullable=True)
     delta_i_in_sigma = qv.Float64Column(nullable=True)
+    dr_over_sigma = qv.Float64Column(nullable=True)
+    hold_in_reduced_chi2 = qv.Float64Column(nullable=True)
 
 
 def fetch_jpl_orbit(designation: str) -> Orbits:
@@ -142,11 +148,14 @@ def compute_orbit_gap(
     fitted_orbit: Orbits,
     jpl_orbit: Orbits,
     variant: str,
+    hold_in_reduced_chi2: float = float("nan"),
 ) -> OrbitGap:
     """Compute element- and state-level gaps between ``fitted_orbit`` and ``jpl_orbit``.
 
     Both orbits must be at the same epoch (caller is responsible for propagating
-    one to match the other beforehand) and must be single-row tables.
+    one to match the other beforehand) and must be single-row tables. The
+    caller may supply ``hold_in_reduced_chi2`` from the fitter so it is
+    surfaced into the parquet alongside the gap.
     """
     assert len(fitted_orbit) == 1, "fitted_orbit must be single-row"
     assert len(jpl_orbit) == 1, "jpl_orbit must be single-row"
@@ -196,6 +205,16 @@ def compute_orbit_gap(
         d_e_sigma = _ratio(fk["e"] - jk["e"], sigmas["e"])
         d_i_sigma = _ratio(_angle_diff_deg(fk["i"], jk["i"]), sigmas["i"])
 
+    # ||dr|| in units of JPL Cartesian position sigma (combined sqrt(σx²+σy²+σz²)).
+    dr_over_sigma = float("nan")
+    cart_cov = jpl_orbit.coordinates.covariance.to_matrix()
+    if cart_cov is not None and cart_cov.shape[0] > 0:
+        diag = np.diag(cart_cov[0])[:3]
+        if np.all(np.isfinite(diag)) and np.all(diag > 0):
+            sigma_dr = float(np.sqrt(diag.sum()))
+            if sigma_dr > 0:
+                dr_over_sigma = dr_au / sigma_dr
+
     return OrbitGap(
         variant=variant,
         epoch_mjd_tdb=fitted_epoch,
@@ -211,6 +230,8 @@ def compute_orbit_gap(
         delta_a_in_sigma=d_a_sigma,
         delta_e_in_sigma=d_e_sigma,
         delta_i_in_sigma=d_i_sigma,
+        dr_over_sigma=dr_over_sigma,
+        hold_in_reduced_chi2=hold_in_reduced_chi2,
     )
 
 
@@ -232,4 +253,6 @@ def build_comparison_table(gaps: Iterable[OrbitGap]) -> ComparisonTable:
         delta_a_in_sigma=[g.delta_a_in_sigma for g in gaps_list],
         delta_e_in_sigma=[g.delta_e_in_sigma for g in gaps_list],
         delta_i_in_sigma=[g.delta_i_in_sigma for g in gaps_list],
+        dr_over_sigma=[g.dr_over_sigma for g in gaps_list],
+        hold_in_reduced_chi2=[g.hold_in_reduced_chi2 for g in gaps_list],
     )

@@ -36,10 +36,10 @@
     "min_n_obs": 100,
     "program_code_null": true
   },
-  "generated_at_utc": "2026-05-19T19:10:07.623620+00:00",
-  "generator_git_commit": "41fb0c36fc9aa858083d681bcb96f4dd10cbd174",
+  "generated_at_utc": "2026-05-21T20:37:26.198058+00:00",
+  "generator_git_commit": "ffc36a5f24f5b6eec2ac9e07c01df2d0e47dd7f8",
   "generator_script": "/Users/kathleenkiker/beads_agent_setup/adam_orbit_det_eval/scripts/build_high_confidence_bias_table.py",
   "row_count": 544,
-  "source_sha256": "15abe9f3c7f0cabebcf74f5cfe4d36d50ca0b09f5f70a403148b4b142cf859a9",
+  "source_sha256": "5906adf1a3791e4ba93aa6ed2ce25f0364c1f846310965b4191dd9dca8a60e56",
   "source_table": "data/mpc_scale_results_20260510/bias_catalog_published/bias_table.parquet"
 }

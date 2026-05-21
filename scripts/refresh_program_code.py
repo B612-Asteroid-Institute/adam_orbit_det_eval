@@ -373,10 +373,15 @@ def aggregate_program_code_stats(sidecar_path: Path, out_path: Path) -> None:
 
     logger.info("Loading sidecar for program_code_stats: %s", sidecar_path)
     tbl = pq.read_table(sidecar_path)
-    # The sidecar carries an extra `trksub` column that is not in the LOOOResult
-    # schema; drop it before constructing the quivr table.
-    if "trksub" in tbl.column_names:
-        tbl = tbl.drop(["trksub"])
+    # The sidecar carries extra columns (trksub from the program_code refresh;
+    # residual_at/ct + speed_deg_per_day + v_ra_unit/v_dec_unit when the
+    # source was the AT/CT-augmented residual parquet) that are not in the
+    # base LOOOResult schema. Drop any column not in LOOOResult.
+    looo_cols = set(LOOOResult.schema.names)
+    extras = [c for c in tbl.column_names if c not in looo_cols]
+    if extras:
+        logger.info("Dropping %d non-LOOOResult columns: %s", len(extras), extras)
+        tbl = tbl.drop(extras)
     looo = LOOOResult.from_pyarrow(tbl)
     stats = compute_program_code_stats(
         looo,
@@ -432,10 +437,12 @@ def main() -> int:
             observations_for_provenance=ORIGINAL_OBS_MERGED,
         )
 
-    # Re-aggregate program_code_stats (lives next to the atct catalog)
+    # Re-aggregate program_code_stats (lives in bias_catalog_published/ —
+    # the file is RA/Dec-only since compute_program_code_stats does not use
+    # AT/CT columns; the RA/Dec sidecar is sufficient as input).
     aggregate_program_code_stats(
-        SIDECAR_RESIDUALS_ATCT if SIDECAR_RESIDUALS_ATCT.exists() else SIDECAR_RESIDUALS,
-        BIAS_PUB_ATCT_DIR / "program_code_stats.parquet",
+        SIDECAR_RESIDUALS,
+        BIAS_PUB_DIR / "program_code_stats.parquet",
     )
 
     # Final SHA-256 verification

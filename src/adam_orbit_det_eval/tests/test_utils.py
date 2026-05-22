@@ -401,6 +401,269 @@ def test_mpc_to_od_observations_sigma_model_uniform() -> None:
     np.testing.assert_allclose(sd[0, 2] * 3600.0, 0.5, rtol=1e-9)
 
 
+def test_mpc_to_od_observations_bias_bayes_shrinkage() -> None:
+    """bayes_shrinkage: σ_used = sqrt(σ_base² + (|bias|·s)²), s = σ_base²/(σ_base² + SEM²)."""
+    ra_deg = 50.0
+    dec_deg = 0.0  # cos(dec)=1 keeps the σ math direct
+    stn = "Z99"
+    obs = _make_synthetic_obs(ra_deg=ra_deg, dec_deg=dec_deg, stn=stn)
+    # Baseline σ_base = 0.5"; bias = 1.0", SEM = 0.5" → s = 0.25/(0.25+0.25) = 0.5
+    # → σ_used = sqrt(0.25 + (1.0·0.5)²) = sqrt(0.25 + 0.25) = sqrt(0.5)
+    od = mpc_to_od_observations(
+        obs,
+        prevent_nans=False,
+        bias_table={stn: (1.0, 1.0)},
+        bias_application="bayes_shrinkage",
+        station_sem_arcsec={stn: (0.5, 0.5)},
+    )
+    assert od is not None
+    sigmas_deg = od.coordinates.covariance.sigmas
+    cos_dec = np.cos(np.deg2rad(dec_deg))
+    expected = float(np.sqrt(0.5))
+    np.testing.assert_allclose(
+        sigmas_deg[0, 1] * cos_dec * 3600.0, expected, rtol=1e-9
+    )
+    np.testing.assert_allclose(sigmas_deg[0, 2] * 3600.0, expected, rtol=1e-9)
+
+    # SEM = 0 (perfect knowledge of bias) → s = 1 → matches rss_additive.
+    od_perfect = mpc_to_od_observations(
+        obs,
+        prevent_nans=False,
+        bias_table={stn: (1.2, 0.3)},
+        bias_application="bayes_shrinkage",
+        station_sem_arcsec={stn: (0.0, 0.0)},
+    )
+    sd = od_perfect.coordinates.covariance.sigmas
+    np.testing.assert_allclose(
+        sd[0, 1] * cos_dec * 3600.0, np.sqrt(0.25 + 1.44), rtol=1e-9
+    )
+    np.testing.assert_allclose(
+        sd[0, 2] * 3600.0, np.sqrt(0.25 + 0.09), rtol=1e-9
+    )
+
+    # SEM >> σ (no information about bias) → s → 0 → σ_used → σ_base.
+    od_noinfo = mpc_to_od_observations(
+        obs,
+        prevent_nans=False,
+        bias_table={stn: (5.0, 5.0)},
+        bias_application="bayes_shrinkage",
+        station_sem_arcsec={stn: (100.0, 100.0)},
+    )
+    sd = od_noinfo.coordinates.covariance.sigmas
+    np.testing.assert_allclose(sd[0, 1] * cos_dec * 3600.0, 0.5, rtol=1e-3)
+    np.testing.assert_allclose(sd[0, 2] * 3600.0, 0.5, rtol=1e-3)
+
+    # Missing station_sem_arcsec → ValueError
+    try:
+        mpc_to_od_observations(
+            obs,
+            prevent_nans=False,
+            bias_table={stn: (1.0, 1.0)},
+            bias_application="bayes_shrinkage",
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Expected ValueError for missing station_sem_arcsec")
+
+
+def test_mpc_to_od_observations_bias_veres_v1_max_floor() -> None:
+    """veres_v1_max_floor: σ = max(Veres σ_per_(stn,cat), |bias|); ignores MPC report."""
+    # Use stn='F51', astcat='Gaia2' which has a (per-stn, cat) Veres override = 0.15"
+    obs_time = Timestamp.from_iso8601(["2024-01-01T00:00:00"], scale="utc")
+    obs = MPCObservations.from_kwargs(
+        requested_provid=["vmf-1"],
+        primary_designation=["vmf-1"],
+        obsid=["vmf-1"],
+        trksub=["trk1"],
+        provid=["vmf-1"],
+        permid=[None],
+        submission_id=[None],
+        obssubid=[None],
+        obstime=obs_time,
+        ra=[100.0],
+        dec=[0.0],
+        # MPC-reported σ = 0.4" is LARGER than Veres 0.15"; veres_v1_max_floor
+        # must override this with Veres (and then floor at |bias|).
+        rmsra=[0.4],
+        rmsdec=[0.4],
+        rmscorr=[0.0],
+        mag=[20.0],
+        rmsmag=[0.1],
+        band=["V"],
+        stn=["F51"],
+        updated_at=Timestamp.from_iso8601(["2024-01-01T00:00:00"], scale="utc"),
+        created_at=Timestamp.from_iso8601(["2024-01-01T00:00:00"], scale="utc"),
+        status=["valid"],
+        astcat=["Gaia2"],
+        mode=["CCD"],
+    )
+    # |bias_ra|=0.3 > Veres 0.15 → σ_ra = 0.3.  |bias_dec|=0.1 < Veres 0.15 → σ_dec = 0.15.
+    od = mpc_to_od_observations(
+        obs,
+        prevent_nans=False,
+        bias_table={"F51": (-0.3, 0.1)},
+        bias_application="veres_v1_max_floor",
+    )
+    assert od is not None
+    sigmas_deg = od.coordinates.covariance.sigmas
+    # At dec=0, cos(dec)=1.
+    np.testing.assert_allclose(sigmas_deg[0, 1] * 3600.0, 0.30, rtol=1e-9)
+    np.testing.assert_allclose(sigmas_deg[0, 2] * 3600.0, 0.15, rtol=1e-9)
+
+    # Station absent from bias_table → just Veres σ (no floor).
+    od_nobias = mpc_to_od_observations(
+        obs,
+        prevent_nans=False,
+        bias_table={"OTHER": (1.0, 1.0)},
+        bias_application="veres_v1_max_floor",
+    )
+    sd = od_nobias.coordinates.covariance.sigmas
+    np.testing.assert_allclose(sd[0, 1] * 3600.0, 0.15, rtol=1e-9)
+    np.testing.assert_allclose(sd[0, 2] * 3600.0, 0.15, rtol=1e-9)
+
+
+def test_mpc_to_od_observations_bias_covar_inflation() -> None:
+    """covar_inflation: 2×2 cov += outer(b, b); off-diagonal couples through rmscorr."""
+    ra_deg = 50.0
+    dec_deg = 0.0
+    stn = "Z99"
+    obs = _make_synthetic_obs(ra_deg=ra_deg, dec_deg=dec_deg, stn=stn)
+    bias_ra_arcsec = 1.0
+    bias_dec_arcsec = -0.5
+
+    od = mpc_to_od_observations(
+        obs,
+        prevent_nans=False,
+        bias_table={stn: (bias_ra_arcsec, bias_dec_arcsec)},
+        bias_application="covar_inflation",
+    )
+    assert od is not None
+
+    cos_dec = np.cos(np.deg2rad(dec_deg))
+    sigmas_deg = od.coordinates.covariance.sigmas
+    # Inflated diagonals (in arcsec).
+    expected_sigma_ra = float(np.sqrt(0.5**2 + bias_ra_arcsec**2))
+    expected_sigma_dec = float(np.sqrt(0.5**2 + bias_dec_arcsec**2))
+    np.testing.assert_allclose(
+        sigmas_deg[0, 1] * cos_dec * 3600.0, expected_sigma_ra, rtol=1e-9
+    )
+    np.testing.assert_allclose(
+        sigmas_deg[0, 2] * 3600.0, expected_sigma_dec, rtol=1e-9
+    )
+    # Off-diagonal: cov_rd_arcsec² = bias_ra * bias_dec = -0.5
+    # Reconstruct from the 6×6 covariance: cov[1, 2] is in deg² (with σ_ra in
+    # deg, not cos(dec)-corrected). At dec=0 this is identical to the
+    # cos(dec)-corrected frame value, so cov_rd_arcsec² = cov[1,2] * 3600².
+    cov_mat = od.coordinates.covariance.to_matrix()
+    cov_rd_deg2 = cov_mat[0, 1, 2]
+    cov_rd_arcsec2 = cov_rd_deg2 * (3600.0**2)
+    np.testing.assert_allclose(
+        cov_rd_arcsec2,
+        bias_ra_arcsec * bias_dec_arcsec,
+        rtol=1e-9,
+    )
+
+    # Station absent from bias_table → unchanged (diagonal, σ=0.5").
+    od_pass = mpc_to_od_observations(
+        obs,
+        prevent_nans=False,
+        bias_table={"OTHER": (1.0, 1.0)},
+        bias_application="covar_inflation",
+    )
+    sd = od_pass.coordinates.covariance.sigmas
+    np.testing.assert_allclose(sd[0, 1] * cos_dec * 3600.0, 0.5, rtol=1e-9)
+    np.testing.assert_allclose(sd[0, 2] * 3600.0, 0.5, rtol=1e-9)
+
+
+def test_mpc_to_od_observations_bias_at_ct_floor() -> None:
+    """at_ct_floor: floor σ in AT/CT basis; rotate back to RA/Dec."""
+    ra_deg = 50.0
+    dec_deg = 0.0
+    stn = "Z99"
+    obs = _make_synthetic_obs(ra_deg=ra_deg, dec_deg=dec_deg, stn=stn)
+
+    # Case 1 — motion along RA: u_ra=1, u_dec=0. AT = RA axis, CT = Dec axis.
+    # Baseline σ_RA = σ_Dec = 0.5". |bias_AT|=1.0, |bias_CT|=0.0:
+    #   σ_AT_used = max(0.5, 1.0) = 1.0; σ_CT_used = max(0.5, 0.0) = 0.5.
+    # Rotated back: σ_RA = 1.0, σ_Dec = 0.5, no cross-term.
+    od = mpc_to_od_observations(
+        obs,
+        prevent_nans=False,
+        bias_application="at_ct_floor",
+        atct_bias_table={stn: (1.0, 0.0)},
+        atct_unit_vectors=np.array([[1.0, 0.0]], dtype=np.float64),
+    )
+    assert od is not None
+    cos_dec = np.cos(np.deg2rad(dec_deg))
+    sigmas_deg = od.coordinates.covariance.sigmas
+    np.testing.assert_allclose(sigmas_deg[0, 1] * cos_dec * 3600.0, 1.0, rtol=1e-9)
+    np.testing.assert_allclose(sigmas_deg[0, 2] * 3600.0, 0.5, rtol=1e-9)
+
+    # Case 2 — motion at 45°: u_ra=u_dec=1/sqrt(2). |bias_AT|=2.0, |bias_CT|=0.
+    # σ_AT² = max(0.5·(0.25 + 0.25), 4.0) = 4.0;  σ_CT² = max(0.5·(0.25 + 0.25), 0) = 0.25.
+    # Rotated back: σ_RA² = 0.5·(4 + 0.25) = 2.125;  σ_Dec² = same = 2.125.
+    # cov_RD² = 0.5·(4 - 0.25) = 1.875.
+    od2 = mpc_to_od_observations(
+        obs,
+        prevent_nans=False,
+        bias_application="at_ct_floor",
+        atct_bias_table={stn: (2.0, 0.0)},
+        atct_unit_vectors=np.array(
+            [[1.0 / np.sqrt(2.0), 1.0 / np.sqrt(2.0)]], dtype=np.float64
+        ),
+    )
+    sigmas2 = od2.coordinates.covariance.sigmas
+    np.testing.assert_allclose(
+        sigmas2[0, 1] * cos_dec * 3600.0, float(np.sqrt(2.125)), rtol=1e-9
+    )
+    np.testing.assert_allclose(
+        sigmas2[0, 2] * 3600.0, float(np.sqrt(2.125)), rtol=1e-9
+    )
+    cov_mat2 = od2.coordinates.covariance.to_matrix()
+    cov_rd_arcsec2 = cov_mat2[0, 1, 2] * (3600.0**2)
+    np.testing.assert_allclose(cov_rd_arcsec2, 1.875, rtol=1e-9)
+
+    # Case 3 — near-stationary (zero velocity unit vector) → pass through.
+    od_stat = mpc_to_od_observations(
+        obs,
+        prevent_nans=False,
+        bias_application="at_ct_floor",
+        atct_bias_table={stn: (1.0, 1.0)},
+        atct_unit_vectors=np.array([[np.nan, np.nan]], dtype=np.float64),
+    )
+    ssd = od_stat.coordinates.covariance.sigmas
+    np.testing.assert_allclose(ssd[0, 1] * cos_dec * 3600.0, 0.5, rtol=1e-9)
+    np.testing.assert_allclose(ssd[0, 2] * 3600.0, 0.5, rtol=1e-9)
+
+    # Missing atct_bias_table → ValueError
+    try:
+        mpc_to_od_observations(
+            obs,
+            prevent_nans=False,
+            bias_application="at_ct_floor",
+            atct_unit_vectors=np.array([[1.0, 0.0]], dtype=np.float64),
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Expected ValueError for missing atct_bias_table")
+
+    # Wrong-shape unit vectors → ValueError
+    try:
+        mpc_to_od_observations(
+            obs,
+            prevent_nans=False,
+            bias_application="at_ct_floor",
+            atct_bias_table={stn: (1.0, 1.0)},
+            atct_unit_vectors=np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float64),
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Expected ValueError for shape mismatch")
+
+
 def test_mpc_to_od_observations_sigma_model_veres2017_fills_missing() -> None:
     """When MPC sigmas are missing, sigma_model='veres2017' fills from the lookup."""
     obs_time = Timestamp.from_iso8601(["2024-01-01T00:00:00"], scale="utc")

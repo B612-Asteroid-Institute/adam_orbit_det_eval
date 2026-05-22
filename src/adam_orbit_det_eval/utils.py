@@ -129,6 +129,9 @@ def mpc_to_od_observations(
     catalog_debias_arcsec: Optional[np.ndarray] = None,
     uniform_sigma_arcsec: float = 0.5,
     station_chi2_per_obs: Optional[Dict[str, float]] = None,
+    station_sem_arcsec: Optional[Dict[str, Tuple[float, float]]] = None,
+    atct_bias_table: Optional[Dict[str, Tuple[float, float]]] = None,
+    atct_unit_vectors: Optional[np.ndarray] = None,
 ) -> Optional[OrbitDeterminationObservations]:
     """
     Convert MPC observations into OD observations.
@@ -175,6 +178,47 @@ def mpc_to_od_observations(
                                       Requires ``station_chi2_per_obs`` to be
                                       supplied. Stations not in the chi2 dict
                                       get factor = 1 (unchanged).
+        ``'bayes_shrinkage'``       — Per-axis Bayesian shrinkage of the bias
+                                      magnitude when the bias estimate is
+                                      itself noisy. Computes a shrinkage
+                                      factor ``s = σ_base² / (σ_base² +
+                                      SEM_bias²)`` and combines as
+                                      ``σ_used = sqrt(σ_base² + (|bias|·s)²)``
+                                      per axis. Reduces bias-inflation when
+                                      SEM_bias >> σ_base (i.e. when the bias
+                                      estimate is poorly determined). Requires
+                                      ``station_sem_arcsec`` with per-station
+                                      ``(sem_ra, sem_dec)``. Stations absent
+                                      from either dict are unchanged.
+        ``'veres_v1_max_floor'``    — Force-override the per-axis sigma with
+                                      the Veres 2017 per-(stn, cat) lookup
+                                      (ignoring MPC-reported sigmas), then
+                                      floor at ``|bias_v1|``. Stacks the two
+                                      principled sigma sources.
+        ``'covar_inflation'``       — Inflate the full 2×2 obs covariance
+                                      using ``(bias_ra, bias_dec)`` as a
+                                      joint perturbation:
+                                      ``Cov_used = Cov_baseline + outer(b, b)``
+                                      where ``b = (bias_ra, bias_dec)``.
+                                      Produces a non-diagonal effective
+                                      covariance via the rmscorr coupling.
+                                      Uses the joint structure of the bias
+                                      estimate, not just diagonal σ.
+        ``'at_ct_floor'``           — Sigma-floor applied in the along-track/
+                                      cross-track basis of the object's
+                                      sky-plane motion. Requires
+                                      ``atct_bias_table`` (per-stn
+                                      ``(|bias_AT|, |bias_CT|)`` in arcsec)
+                                      and ``atct_unit_vectors`` (shape
+                                      ``(N, 2)`` giving the per-obs cos(dec)-
+                                      frame velocity unit vector
+                                      ``(u_ra_cosdec, u_dec)``). The AT/CT
+                                      baseline σ comes from rotating the
+                                      diagonal RA/Dec baseline covariance.
+                                      σ_AT_used = max(σ_AT_base, |bias_AT|);
+                                      same for CT. The effective 2×2 cov is
+                                      then rotated back to RA/Dec, producing
+                                      correlated σ_RA, σ_Dec.
         ``'subtract'``              — *Legacy/reference.* Subtract the bias
                                       from the observation position. Treats
                                       the bias as ground truth; too aggressive
@@ -198,6 +242,20 @@ def mpc_to_od_observations(
       Used only when ``bias_application='performance_weighted'``. Maps station
       ``obs_code`` to ``chi2_per_obs`` from the v1 bias catalog. Stations
       absent from the dict are not inflated (factor = 1).
+    station_sem_arcsec: dict[str, tuple[float, float]] or None, default None
+      Used only when ``bias_application='bayes_shrinkage'``. Maps station
+      ``obs_code`` to ``(sem_ra_arcsec, sem_dec_arcsec)`` — the standard
+      error of the per-axis mean-bias estimate from the v1 catalog. Stations
+      absent from the dict are unchanged.
+    atct_bias_table: dict[str, tuple[float, float]] or None, default None
+      Used only when ``bias_application='at_ct_floor'``. Maps station
+      ``obs_code`` to ``(|bias_AT_arcsec|, |bias_CT_arcsec|)`` from the v1
+      AT/CT bias catalog (per-station rollup; ``program_code IS NULL``).
+    atct_unit_vectors: ndarray of shape (N, 2) or None, default None
+      Used only when ``bias_application='at_ct_floor'``. Per-observation
+      sky-plane velocity unit vector in the cos(dec)-corrected frame:
+      ``(u_ra_cosdec, u_dec)``. Rows with NaN/zero velocity (near-stationary)
+      receive the unrotated (RA/Dec-diagonal) sigma_floor as a fallback.
 
     Returns:
     --------
@@ -209,15 +267,31 @@ def mpc_to_od_observations(
         "subtract",
         "rss_additive",
         "performance_weighted",
+        "bayes_shrinkage",
+        "veres_v1_max_floor",
+        "covar_inflation",
+        "at_ct_floor",
     ):
         raise ValueError(
             f"Unknown bias_application={bias_application!r}; expected one of "
-            "'sigma_floor', 'subtract', 'rss_additive', 'performance_weighted'"
+            "'sigma_floor', 'subtract', 'rss_additive', 'performance_weighted', "
+            "'bayes_shrinkage', 'veres_v1_max_floor', 'covar_inflation', "
+            "'at_ct_floor'"
         )
     if bias_application == "performance_weighted" and station_chi2_per_obs is None:
         raise ValueError(
             "bias_application='performance_weighted' requires station_chi2_per_obs"
         )
+    if bias_application == "bayes_shrinkage" and station_sem_arcsec is None:
+        raise ValueError(
+            "bias_application='bayes_shrinkage' requires station_sem_arcsec"
+        )
+    if bias_application == "at_ct_floor":
+        if atct_bias_table is None or atct_unit_vectors is None:
+            raise ValueError(
+                "bias_application='at_ct_floor' requires both atct_bias_table"
+                " and atct_unit_vectors"
+            )
     obs_time = obs_set.obstime
     codes = obs_set.stn
     if not np.all(codes):
@@ -328,6 +402,63 @@ def mpc_to_od_observations(
                 sigma_ra_cosdec_arcsec[i] = cur_ra * factor
             if np.isfinite(cur_dec) and cur_dec > 0:
                 sigma_dec_arcsec[i] = cur_dec * factor
+    elif bias_application == "bayes_shrinkage" and bias_table is not None:
+        # Per-axis Bayesian shrinkage: combine baseline σ with a damped bias.
+        #
+        #   s = σ_base² / (σ_base² + SEM_bias²)
+        #   σ_used = sqrt(σ_base² + (|bias|·s)²)
+        #
+        # When SEM_bias >> σ_base the bias is treated as poorly determined and
+        # shrinks toward 0 (σ_used → σ_base). When SEM_bias << σ_base the bias
+        # passes through nearly unmodified (σ_used → sqrt(σ_base² + bias²),
+        # matching rss_additive). Falls back to rss_additive when SEM is
+        # missing for a station (conservative default).
+        assert station_sem_arcsec is not None  # validated above
+        stns_list = obs_set.stn.to_pylist()
+        for i, code in enumerate(stns_list):
+            entry = bias_table.get(code)
+            if entry is None:
+                continue
+            bra = float(abs(entry[0]))
+            bdec = float(abs(entry[1]))
+            sem = station_sem_arcsec.get(code)
+            sem_ra = float(abs(sem[0])) if sem is not None else 0.0
+            sem_dec = float(abs(sem[1])) if sem is not None else 0.0
+            cur_ra = sigma_ra_cosdec_arcsec[i]
+            cur_dec = sigma_dec_arcsec[i]
+            base_ra_sq = (
+                cur_ra * cur_ra if np.isfinite(cur_ra) and cur_ra > 0 else 0.0
+            )
+            base_dec_sq = (
+                cur_dec * cur_dec if np.isfinite(cur_dec) and cur_dec > 0 else 0.0
+            )
+            denom_ra = base_ra_sq + sem_ra * sem_ra
+            denom_dec = base_dec_sq + sem_dec * sem_dec
+            s_ra = base_ra_sq / denom_ra if denom_ra > 0 else 0.0
+            s_dec = base_dec_sq / denom_dec if denom_dec > 0 else 0.0
+            sigma_ra_cosdec_arcsec[i] = float(
+                np.sqrt(base_ra_sq + (bra * s_ra) ** 2)
+            )
+            sigma_dec_arcsec[i] = float(
+                np.sqrt(base_dec_sq + (bdec * s_dec) ** 2)
+            )
+    elif bias_application == "veres_v1_max_floor" and bias_table is not None:
+        # Force Veres σ (per-(stn, catalog) lookup) as the baseline, ignoring
+        # any MPC-reported sigma; then floor at |bias_v1|. Stacks the two
+        # principled σ sources rather than letting the MPC report through.
+        stns_list = obs_set.stn.to_pylist()
+        astcats_list = obs_set.astcat.to_pylist()
+        for i, code in enumerate(stns_list):
+            v_ra, v_dec = get_veres2017_sigma(code, astcats_list[i])
+            entry = bias_table.get(code)
+            if entry is None:
+                sigma_ra_cosdec_arcsec[i] = float(v_ra)
+                sigma_dec_arcsec[i] = float(v_dec)
+                continue
+            bra = float(abs(entry[0]))
+            bdec = float(abs(entry[1]))
+            sigma_ra_cosdec_arcsec[i] = float(max(float(v_ra), bra))
+            sigma_dec_arcsec[i] = float(max(float(v_dec), bdec))
 
     sigma_ra_cosdec_deg = sigma_ra_cosdec_arcsec / 3600.0
     sigma_dec_deg = sigma_dec_arcsec / 3600.0
@@ -340,6 +471,113 @@ def mpc_to_od_observations(
     # Include RA/Dec correlation if present; treat missing correlation as 0 (uncorrelated).
     corr = obs_set.rmscorr.to_numpy(zero_copy_only=False)
     corr = np.where(np.isfinite(corr), corr, 0.0)
+
+    # Working covariance in (σ_ra_cosdec arcsec, σ_dec arcsec) space; later
+    # converted to deg + filled into the (N, 6, 6) covariance tensor. Two of
+    # the new modes (covar_inflation, at_ct_floor) inject non-diagonal
+    # covariance terms here.
+    sigma_ra_cosdec_sq = sigma_ra_cosdec_arcsec * sigma_ra_cosdec_arcsec
+    sigma_dec_sq = sigma_dec_arcsec * sigma_dec_arcsec
+    # Cross-term in arcsec² in the cos(dec)-corrected RA / Dec frame.
+    cov_ra_cosdec_dec_arcsec_sq = (
+        corr * sigma_ra_cosdec_arcsec * sigma_dec_arcsec
+    )
+
+    if bias_application == "covar_inflation" and bias_table is not None:
+        # Inflate the 2×2 obs covariance by the outer product of the bias
+        # vector b = (bias_ra, bias_dec) (treated in the cos(dec)-corrected
+        # frame to match MPC's rmsra convention). For stations absent from the
+        # table, the covariance is unchanged.
+        stns_list = obs_set.stn.to_pylist()
+        for i, code in enumerate(stns_list):
+            entry = bias_table.get(code)
+            if entry is None:
+                continue
+            bra = float(entry[0])  # signed; outer-product sign matters
+            bdec = float(entry[1])
+            sigma_ra_cosdec_sq[i] = sigma_ra_cosdec_sq[i] + bra * bra
+            sigma_dec_sq[i] = sigma_dec_sq[i] + bdec * bdec
+            cov_ra_cosdec_dec_arcsec_sq[i] = (
+                cov_ra_cosdec_dec_arcsec_sq[i] + bra * bdec
+            )
+    elif bias_application == "at_ct_floor":
+        # Sigma-floor in the AT/CT basis defined by the per-obs sky-plane
+        # velocity unit vector. Falls back to a diagonal RA/Dec sigma_floor
+        # using |bias_ra|, |bias_dec| from `bias_table` when the unit vector
+        # is undefined (near-stationary) and `bias_table` is provided —
+        # otherwise the row passes through unchanged.
+        assert atct_bias_table is not None  # validated above
+        assert atct_unit_vectors is not None
+        unit = np.asarray(atct_unit_vectors, dtype=np.float64)
+        if unit.shape != (len(obs_set), 2):
+            raise ValueError(
+                f"atct_unit_vectors must have shape ({len(obs_set)}, 2); "
+                f"got {unit.shape}"
+            )
+        stns_list = obs_set.stn.to_pylist()
+        for i, code in enumerate(stns_list):
+            u_ra = float(unit[i, 0])
+            u_dec = float(unit[i, 1])
+            entry = atct_bias_table.get(code)
+            unit_finite = np.isfinite(u_ra) and np.isfinite(u_dec) and (
+                abs(u_ra) > 0.0 or abs(u_dec) > 0.0
+            )
+            if entry is None or not unit_finite:
+                # Either station has no AT/CT bias listed, or the obs is
+                # near-stationary (rotation undefined): pass through.
+                continue
+            b_at = float(abs(entry[0]))
+            b_ct = float(abs(entry[1]))
+            # Baseline σ_AT² / σ_CT² obtained by rotating the diagonal RA/Dec
+            # (cos(dec)-corrected) baseline covariance into the AT/CT basis.
+            cur_ra2 = (
+                sigma_ra_cosdec_sq[i]
+                if np.isfinite(sigma_ra_cosdec_sq[i]) and sigma_ra_cosdec_sq[i] > 0
+                else 0.0
+            )
+            cur_dec2 = (
+                sigma_dec_sq[i]
+                if np.isfinite(sigma_dec_sq[i]) and sigma_dec_sq[i] > 0
+                else 0.0
+            )
+            sigma_at2_base = u_ra * u_ra * cur_ra2 + u_dec * u_dec * cur_dec2
+            sigma_ct2_base = u_dec * u_dec * cur_ra2 + u_ra * u_ra * cur_dec2
+            sigma_at2_used = max(sigma_at2_base, b_at * b_at)
+            sigma_ct2_used = max(sigma_ct2_base, b_ct * b_ct)
+            # Rotate diag(σ_AT², σ_CT²) back into the RA/Dec frame.
+            #   R = [[u_ra, u_dec], [-u_dec, u_ra]]   (RA/Dec → AT/CT)
+            #   C_RA/Dec = R.T @ diag(σ_AT², σ_CT²) @ R
+            sigma_ra_cosdec_sq[i] = (
+                u_ra * u_ra * sigma_at2_used + u_dec * u_dec * sigma_ct2_used
+            )
+            sigma_dec_sq[i] = (
+                u_dec * u_dec * sigma_at2_used + u_ra * u_ra * sigma_ct2_used
+            )
+            cov_ra_cosdec_dec_arcsec_sq[i] = u_ra * u_dec * (
+                sigma_at2_used - sigma_ct2_used
+            )
+
+    sigma_ra_cosdec_arcsec = np.sqrt(np.where(sigma_ra_cosdec_sq > 0, sigma_ra_cosdec_sq, np.nan))
+    sigma_dec_arcsec = np.sqrt(np.where(sigma_dec_sq > 0, sigma_dec_sq, np.nan))
+    sigma_ra_cosdec_deg = sigma_ra_cosdec_arcsec / 3600.0
+    sigma_dec_deg = sigma_dec_arcsec / 3600.0
+    sigma_ra_deg = np.where(
+        np.isfinite(cos_dec) & (cos_dec != 0.0),
+        sigma_ra_cosdec_deg / cos_dec,
+        np.nan,
+    )
+    # Effective correlation matching the updated (possibly inflated) variances.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        corr_eff = np.where(
+            (sigma_ra_cosdec_arcsec > 0) & (sigma_dec_arcsec > 0),
+            cov_ra_cosdec_dec_arcsec_sq
+            / (sigma_ra_cosdec_arcsec * sigma_dec_arcsec),
+            0.0,
+        )
+    # Numerical clip — small floating-point overshoot would otherwise make the
+    # 2×2 indefinite.
+    corr_eff = np.clip(corr_eff, -0.999999, 0.999999)
+    corr = np.where(np.isfinite(corr_eff), corr_eff, 0.0)
 
     cov = np.full((len(obs_set), 6, 6), np.nan, dtype=np.float64)
     # Prevent 'Covariance matrix has NaNs on the diagonal' and 'Singular matrix

@@ -664,6 +664,90 @@ def test_mpc_to_od_observations_bias_at_ct_floor() -> None:
         raise AssertionError("Expected ValueError for shape mismatch")
 
 
+def test_mpc_to_od_observations_bias_subtract_sem_inflated() -> None:
+    """subtract_sem_inflated: position subtraction + diagonal σ inflation by σ_b.
+
+    Verifies (1) the corrected position matches obs - bias to <1e-9, (2) the
+    per-axis sigma matches sqrt(σ_baseline² + σ_b²) to <1e-9, and (3) NO
+    off-diagonal cov term is introduced (corr stays 0).
+    """
+    ra_deg = 100.123456789
+    dec_deg = 0.0  # cos(dec)=1 keeps the math direct
+    stn = "Z99"
+    bias_ra_arcsec = 0.20
+    bias_dec_arcsec = -0.15
+    sigma_b_ra_arcsec = 0.30  # 1-σ uncertainty on the bias estimate
+    sigma_b_dec_arcsec = 0.10
+
+    obs = _make_synthetic_obs(ra_deg=ra_deg, dec_deg=dec_deg, stn=stn)
+
+    od = mpc_to_od_observations(
+        obs,
+        prevent_nans=False,
+        bias_table={stn: (bias_ra_arcsec, bias_dec_arcsec)},
+        bias_application="subtract_sem_inflated",
+        station_bias_ci_arcsec={stn: (sigma_b_ra_arcsec, sigma_b_dec_arcsec)},
+    )
+    assert od is not None
+
+    # (1) Position correction: obs_RA - bias_ra (in cos(dec)-corrected frame).
+    cos_dec = np.cos(np.deg2rad(dec_deg))
+    expected_ra = ra_deg - (bias_ra_arcsec / 3600.0) / cos_dec
+    expected_dec = dec_deg - bias_dec_arcsec / 3600.0
+    np.testing.assert_allclose(
+        od.coordinates.lon.to_numpy(zero_copy_only=False), [expected_ra], atol=1e-9
+    )
+    np.testing.assert_allclose(
+        od.coordinates.lat.to_numpy(zero_copy_only=False), [expected_dec], atol=1e-9
+    )
+
+    # (2) σ inflation: sqrt(0.5² + σ_b²) per axis.
+    sigmas_deg = od.coordinates.covariance.sigmas
+    expected_sigma_ra_arcsec = float(np.sqrt(0.5**2 + sigma_b_ra_arcsec**2))
+    expected_sigma_dec_arcsec = float(np.sqrt(0.5**2 + sigma_b_dec_arcsec**2))
+    np.testing.assert_allclose(
+        sigmas_deg[0, 1] * cos_dec * 3600.0, expected_sigma_ra_arcsec, rtol=1e-9
+    )
+    np.testing.assert_allclose(
+        sigmas_deg[0, 2] * 3600.0, expected_sigma_dec_arcsec, rtol=1e-9
+    )
+
+    # (3) No off-diagonal cov term. cov[1, 2] should remain 0 (baseline corr = 0).
+    cov_mat = od.coordinates.covariance.to_matrix()
+    np.testing.assert_allclose(cov_mat[0, 1, 2], 0.0, atol=1e-30)
+
+    # Station absent from bias_table → no subtract, no inflation.
+    od_pass = mpc_to_od_observations(
+        obs,
+        prevent_nans=False,
+        bias_table={"OTHER": (1.0, 1.0)},
+        bias_application="subtract_sem_inflated",
+        station_bias_ci_arcsec={"OTHER": (0.5, 0.5)},
+    )
+    np.testing.assert_allclose(
+        od_pass.coordinates.lon.to_numpy(zero_copy_only=False), [ra_deg], atol=1e-12
+    )
+    np.testing.assert_allclose(
+        od_pass.coordinates.lat.to_numpy(zero_copy_only=False), [dec_deg], atol=1e-12
+    )
+    sd = od_pass.coordinates.covariance.sigmas
+    np.testing.assert_allclose(sd[0, 1] * cos_dec * 3600.0, 0.5, rtol=1e-9)
+    np.testing.assert_allclose(sd[0, 2] * 3600.0, 0.5, rtol=1e-9)
+
+    # Missing station_bias_ci_arcsec → ValueError.
+    try:
+        mpc_to_od_observations(
+            obs,
+            prevent_nans=False,
+            bias_table={stn: (bias_ra_arcsec, bias_dec_arcsec)},
+            bias_application="subtract_sem_inflated",
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Expected ValueError for missing station_bias_ci_arcsec")
+
+
 def test_mpc_to_od_observations_sigma_model_veres2017_fills_missing() -> None:
     """When MPC sigmas are missing, sigma_model='veres2017' fills from the lookup."""
     obs_time = Timestamp.from_iso8601(["2024-01-01T00:00:00"], scale="utc")

@@ -132,6 +132,7 @@ def mpc_to_od_observations(
     station_sem_arcsec: Optional[Dict[str, Tuple[float, float]]] = None,
     atct_bias_table: Optional[Dict[str, Tuple[float, float]]] = None,
     atct_unit_vectors: Optional[np.ndarray] = None,
+    station_bias_ci_arcsec: Optional[Dict[str, Tuple[float, float]]] = None,
 ) -> Optional[OrbitDeterminationObservations]:
     """
     Convert MPC observations into OD observations.
@@ -224,6 +225,18 @@ def mpc_to_od_observations(
                                       the bias as ground truth; too aggressive
                                       in principle but retained as a baseline
                                       anchor.
+        ``'subtract_sem_inflated'`` — Subtract the bias from the position
+                                      (same as ``subtract``) AND inflate the
+                                      per-axis sigma diagonally with the
+                                      bias-estimate uncertainty:
+                                      ``σ_used² = σ_baseline² + σ_b²``,
+                                      no off-diagonal term. Pairs the
+                                      ``subtract`` win on objects where the
+                                      offset is well-determined with a
+                                      graceful ``no_bias``-like fallback
+                                      when the offset is uncertain. Requires
+                                      ``station_bias_ci_arcsec`` (per-stn
+                                      1-σ uncertainty on the bias estimate).
     catalog_debias_arcsec: ndarray of shape (N, 2) or None, default None
       Optional per-observation star-catalog debiasing correction. Each row is
       ``(bias_ra_cosdec_arcsec, bias_dec_arcsec)`` and is subtracted from the
@@ -256,6 +269,13 @@ def mpc_to_od_observations(
       sky-plane velocity unit vector in the cos(dec)-corrected frame:
       ``(u_ra_cosdec, u_dec)``. Rows with NaN/zero velocity (near-stationary)
       receive the unrotated (RA/Dec-diagonal) sigma_floor as a fallback.
+    station_bias_ci_arcsec: dict[str, tuple[float, float]] or None, default None
+      Used only when ``bias_application='subtract_sem_inflated'``. Maps
+      station ``obs_code`` to ``(σ_b_ra, σ_b_dec)`` — the per-axis 1-σ
+      uncertainty on the v1 bias estimate. Conventionally derived from the
+      published 95% CI half-width: ``σ_b = (ci_high - ci_low) / 2 / 1.96``.
+      Stations absent from the dict (or from ``bias_table``) pass through
+      unchanged.
 
     Returns:
     --------
@@ -271,12 +291,13 @@ def mpc_to_od_observations(
         "veres_v1_max_floor",
         "covar_inflation",
         "at_ct_floor",
+        "subtract_sem_inflated",
     ):
         raise ValueError(
             f"Unknown bias_application={bias_application!r}; expected one of "
             "'sigma_floor', 'subtract', 'rss_additive', 'performance_weighted', "
             "'bayes_shrinkage', 'veres_v1_max_floor', 'covar_inflation', "
-            "'at_ct_floor'"
+            "'at_ct_floor', 'subtract_sem_inflated'"
         )
     if bias_application == "performance_weighted" and station_chi2_per_obs is None:
         raise ValueError(
@@ -292,6 +313,10 @@ def mpc_to_od_observations(
                 "bias_application='at_ct_floor' requires both atct_bias_table"
                 " and atct_unit_vectors"
             )
+    if bias_application == "subtract_sem_inflated" and station_bias_ci_arcsec is None:
+        raise ValueError(
+            "bias_application='subtract_sem_inflated' requires station_bias_ci_arcsec"
+        )
     obs_time = obs_set.obstime
     codes = obs_set.stn
     if not np.all(codes):
@@ -441,6 +466,35 @@ def mpc_to_od_observations(
             )
             sigma_dec_arcsec[i] = float(
                 np.sqrt(base_dec_sq + (bdec * s_dec) ** 2)
+            )
+    elif bias_application == "subtract_sem_inflated" and bias_table is not None:
+        # Diagonal-only σ inflation by the bias-estimate uncertainty σ_b:
+        #     σ_used² = σ_baseline² + σ_b²    per axis
+        # The actual position subtraction (RA -= bias_ra, Dec -= bias_dec) is
+        # handled later in the position-mutation block (mirrors the
+        # ``subtract`` mode). No off-diagonal contribution is injected here —
+        # that is the entire point of this variant vs ``covar_inflation``.
+        assert station_bias_ci_arcsec is not None  # validated above
+        stns_list = obs_set.stn.to_pylist()
+        for i, code in enumerate(stns_list):
+            if bias_table.get(code) is None:
+                # Stations absent from the v1 bias table get neither the
+                # subtract correction (below) nor the σ inflation (here).
+                continue
+            sigma_b = station_bias_ci_arcsec.get(code)
+            if sigma_b is None:
+                continue
+            sb_ra = float(abs(sigma_b[0]))
+            sb_dec = float(abs(sigma_b[1]))
+            cur_ra = sigma_ra_cosdec_arcsec[i]
+            cur_dec = sigma_dec_arcsec[i]
+            base_ra = cur_ra if np.isfinite(cur_ra) and cur_ra > 0 else 0.0
+            base_dec = cur_dec if np.isfinite(cur_dec) and cur_dec > 0 else 0.0
+            sigma_ra_cosdec_arcsec[i] = float(
+                np.sqrt(base_ra * base_ra + sb_ra * sb_ra)
+            )
+            sigma_dec_arcsec[i] = float(
+                np.sqrt(base_dec * base_dec + sb_dec * sb_dec)
             )
     elif bias_application == "veres_v1_max_floor" and bias_table is not None:
         # Force Veres σ (per-(stn, catalog) lookup) as the baseline, ignoring
@@ -595,7 +649,9 @@ def mpc_to_od_observations(
     lon = obs_set.ra.to_numpy(zero_copy_only=False).astype(np.float64, copy=True)
     lat = obs_set.dec.to_numpy(zero_copy_only=False).astype(np.float64, copy=True)
 
-    if bias_table is not None and bias_application == "subtract":
+    if bias_table is not None and bias_application in (
+        "subtract", "subtract_sem_inflated"
+    ):
         stn_codes = codes.to_pylist()
         bias_ra_arcsec = np.zeros(len(obs_set), dtype=np.float64)
         bias_dec_arcsec = np.zeros(len(obs_set), dtype=np.float64)

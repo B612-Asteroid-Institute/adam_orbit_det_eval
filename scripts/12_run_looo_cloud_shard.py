@@ -164,53 +164,39 @@ def get_propagator_class(name: str):
         raise ValueError(f"Unknown propagator: {name}")
 
 
-def get_orbit_fitter(name: str, fo_result_dir: str, strict: bool = True, propagator=None):
-    """Build an OrbitFitter instance (or None for scipy DC fallback).
+_BEAD_TVG_REASON = (
+    "scipy fit_least_squares is gated pending bead tvg "
+    "(10-100x chi2 regression on ASSIST+MPC warm-start, Mar-Apr 2026, "
+    "likely caused by the adam-assist 1.2.0 upgrade on 2026-04-08). "
+    "Only --orbit-fitter=findorb is permitted in the cloud shard runner."
+)
 
-    Parameters
-    ----------
-    name : str
-        Fitter name: "scipy", "findorb", or "native".
-    fo_result_dir : str
-        Directory for FindOrb intermediate outputs.
-    strict : bool
-        If True (default), abort when the requested fitter is not importable.
-    propagator : Propagator, optional
-        Propagator instance used by the fitter to evaluate hold-in chi2.
-        Should match the propagator used downstream so chi2 values are
-        consistent.
+
+def get_orbit_fitter(name, fo_result_dir: str, strict: bool = True, propagator=None):
+    """Build a FindOrb orbit fitter instance.
+
+    The cloud shard runner is locked to FindOrb while bead tvg remains open;
+    any other value (including ``None``, ``"scipy"``, or ``"native"``) raises
+    ValueError so a future operator cannot accidentally reach the regressed
+    scipy fit_least_squares path on the cloud fleet.
     """
-    if name == "scipy":
-        return None
-    if name == "findorb":
-        try:
-            from adam_fo.find_orb_orbit_fitter import FindOrbOrbitFitter
-            return FindOrbOrbitFitter(fo_result_dir=fo_result_dir, propagator=propagator)
-        except ImportError as e:
-            msg = (
-                f"FindOrbOrbitFitter unavailable ({e}). "
-                "Cannot use --orbit-fitter=findorb."
-            )
-            if strict:
-                logger.critical(msg + " Aborting (use --no-strict-fitter to allow fallback).")
-                sys.exit(1)
-            logger.critical(msg + " Falling back to scipy DC.")
-            return None
-    if name == "native":
-        try:
-            from adam_core.orbit_determination.native_orbit_fitter import NativeOrbitFitter
-            return NativeOrbitFitter()
-        except ImportError as e:
-            msg = (
-                f"NativeOrbitFitter unavailable ({e}). "
-                "Cannot use --orbit-fitter=native."
-            )
-            if strict:
-                logger.critical(msg + " Aborting (use --no-strict-fitter to allow fallback).")
-                sys.exit(1)
-            logger.critical(msg + " Falling back to scipy DC.")
-            return None
-    raise ValueError(f"Unknown orbit fitter: {name}")
+    if name != "findorb":
+        raise ValueError(f"orbit_fitter={name!r} rejected: {_BEAD_TVG_REASON}")
+    try:
+        from adam_fo.find_orb_orbit_fitter import FindOrbOrbitFitter
+        return FindOrbOrbitFitter(fo_result_dir=fo_result_dir, propagator=propagator)
+    except ImportError as e:
+        msg = (
+            f"FindOrbOrbitFitter unavailable ({e}). "
+            "Cannot use --orbit-fitter=findorb."
+        )
+        if strict:
+            logger.critical(msg + " Aborting (use --no-strict-fitter to skip — note: no fallback path is available).")
+            sys.exit(1)
+        raise ValueError(
+            "FindOrb is the only permitted fitter and is unavailable; "
+            f"scipy fallback refused. {_BEAD_TVG_REASON}"
+        ) from e
 
 
 # ---------------------------------------------------------------------------
@@ -266,9 +252,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--orbit-fitter",
-        choices=["scipy", "findorb", "native"],
+        choices=["findorb"],
         default="findorb",
-        help="Orbit fitter for hold-in fits (default: findorb)",
+        help="Orbit fitter for hold-in fits. Locked to 'findorb' — see bead tvg "
+             "for the scipy fit_least_squares + ASSIST regression that motivates "
+             "this restriction.",
     )
     p.add_argument(
         "--strict-fitter",
@@ -299,6 +287,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     t0 = time.time()
+
+    logger.info(f"Orbit fitter: {args.orbit_fitter} (locked — see bead tvg)")
 
     # Resolve shard
     shard_index = resolve_shard_index(args.shard_index)

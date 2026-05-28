@@ -251,12 +251,13 @@ class TestParseArgs:
             "--gcs-output-prefix", "gs://bucket/output",
             "--shard-index", "5",
             "--propagator", "twobody",
-            "--orbit-fitter", "scipy",
+            "--orbit-fitter", "findorb",
             "--no-strict-fitter",
             "--max-processes", "4",
         ])
         assert args.shard_index == 5
         assert args.propagator == "twobody"
-        assert args.orbit_fitter == "scipy"
+        # --orbit-fitter is locked to 'findorb' (see bead tvg); scipy / native rejected.
+        assert args.orbit_fitter == "findorb"
         assert args.strict_fitter is False
         assert args.max_processes == 4

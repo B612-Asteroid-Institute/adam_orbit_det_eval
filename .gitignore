@@ -26,6 +26,8 @@ data/sim_products/phase1_constant_bias/
 data/mpc_scale_*/
 # Pilot validation outputs (local integration tests)
 data/pilot_validation/
+# One-shot audit reports (e.g. Veres fallback coverage, bead ie2)
+data/audit/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

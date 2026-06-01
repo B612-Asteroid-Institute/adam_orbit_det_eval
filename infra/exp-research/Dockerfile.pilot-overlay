@@ -3,29 +3,52 @@
 # Layers workspace adam_core + adam_orbit_det_eval on top of the isolation study
 # base image, then builds Find_Orb (binary + ephemerides) via build-fo.
 #
-# The base image supplies: Python 3.11, build-essential, ASSIST, adam_fo package,
-# adam-assist, google-cloud-storage, and all transitive deps.
+# The base image (mpc-isolation-study, Debian Trixie, GCC 14) supplies:
+#   Python 3.11, build-essential, ASSIST, adam_fo, adam-assist, google-cloud-storage.
 # It does NOT include the Find_Orb binary or ephemeris files — build-fo adds them.
+#
+# Find_Orb's pinned commits don't compile with GCC 14 (bead mxw), so we build
+# Find_Orb in a Bookworm-based stage (GCC 12) and copy the artifacts over.
 #
 # Usage (Cloud Build):
 #   gcloud builds submit --tag <registry>/<image>:<tag> \
 #     --project moeyens-thor-dev \
 #     --machine-type e2-highcpu-8 \
-#     --timeout 1800s \
+#     --timeout 2400s \
 #     /path/to/context/
 #
+
+# ============================================================================
+# Stage 1: Build Find_Orb binary + download ephemerides on Bookworm (GCC 12)
+# ============================================================================
+FROM python:3.11-bookworm AS fo-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential git wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install adam_fo (with deps) to get the build-fo entrypoint
+COPY adam_fo/ /tmp/adam_fo/
+RUN cd /tmp/adam_fo && PDM_BUILD_SCM_VERSION=99.0.0 pip install --no-cache-dir .
+
+# Build Find_Orb + download DE440t (~800 MB) and bc405.dat
+RUN build-fo
+
+# Verify artifacts exist before proceeding
+RUN ls -la /root/.local/share/adam_fo/find_orb/.find_orb/linux_p1550p2650.440t \
+    && ls -la /root/.local/share/adam_fo/find_orb/.find_orb/bc405.dat \
+    && ls -la /root/.local/share/adam_fo/find_orb/find_orb/fo \
+    && echo "Find_Orb builder stage OK"
+
+# ============================================================================
+# Stage 2: Final image — isolation study base + Find_Orb artifacts + overlays
+# ============================================================================
 FROM us-west1-docker.pkg.dev/moeyens-thor-dev/ai/mpc-isolation-study:latest-20260409170834
 
 WORKDIR /app
 
-# --- Install build deps needed by build-fo (git for cloning, wget for ephemerides) ---
-RUN apt-get update && apt-get install -y --no-install-recommends git wget \
-    && rm -rf /var/lib/apt/lists/*
-
-# --- Build Find_Orb binary + download DE440t and bc405.dat ephemerides ---
-# Must run BEFORE overlaying packages so build-fo uses the base image's adam_fo.
-# Result: /root/.local/share/adam_fo/find_orb/{find_orb binary, .find_orb/linux_p1550p2650.440t, bc405.dat}
-RUN build-fo
+# --- Copy Find_Orb artifacts from builder stage ---
+COPY --from=fo-builder /root/.local/share/adam_fo/ /root/.local/share/adam_fo/
 
 # --- Overlay workspace adam_core (fixes refine_fit ABC mismatch) ---
 COPY adam_core/ /app/adam_core/

@@ -3,7 +3,9 @@
 
 # Large data products — too big for GitHub
 data/looo_results/
+data/looo_analysis/
 data/looo_sample_3500/
+reports/
 data/sim_products/cache/
 data/sim_products/cache_assist/
 data/sim_products/cache_neo100/

@@ -143,6 +143,26 @@ cd adam_orbit_det_eval
 python scripts/15_fetch_mpc_scale.py --output-dir data/mpc_scale_full --shard-size 1000
 #     → set job.completions = the shard count in data/mpc_scale_full/fetch_metadata.json
 
+# 4a-EFCC18 (v2 ONLY — bead 54t). Apply EFCC18 catalog debiasing to the fetched
+#   shards BEFORE upload, producing a corrected shard tree alongside the raw one.
+#   Standalone preprocessing step; not yet wired into the cloud runner — run it
+#   here between fetch and upload. Idempotent/resumable (skips existing output).
+python scripts/preprocess_efcc18.py \
+    --input  data/mpc_scale_full \
+    --output data/mpc_scale_full_efcc18 \
+    --efcc18-dir data/efcc18 \
+    --source-tgz /Users/kathleenkiker/claude_cli/debias_2018.tgz
+#     → corrected shards in data/mpc_scale_full_efcc18/shard_*/mpc_observations.parquet
+#       (ra/dec replaced with EFCC18-corrected values; ra_observed/dec_observed,
+#        efcc18_applied, efcc18_d{ra,dec}_arcsec preserved for delta-bias work)
+#     → roll-up coverage in data/mpc_scale_full_efcc18/_efcc18_coverage.json
+#     Coverage on the v1 MPC sample: ~52% of obs corrected, ~46% Gaia reference
+#     frame (correct no-op — EFCC18 is anchored to Gaia-DR2), ~2% unsupported
+#     catalogs (PS1/ATLAS2/UNK). data/efcc18/ is a regenerable cache (gitignored).
+#     Upload the CORRECTED tree (4b) for the v2 `corrected` catalog run; the raw
+#     tree still feeds the v1-equivalent `raw` run. See docs/v2-scope.md §"Core
+#     improvement: EFCC18 catalog-debiasing as preprocessing".
+
 # 4b. Upload shards to GCS
 gsutil -m cp -r data/mpc_scale_full/shard_* gs://exp-research/mpc-real-data-looo/input/
 

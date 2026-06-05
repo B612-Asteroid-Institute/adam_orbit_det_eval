@@ -227,7 +227,35 @@ python scripts/18_apply_publication_hygiene.py \
   --source-obs-dir data/mpc_scale_full
 #   → merged_looo_results_published.parquet + observatory_stats_published.parquet
 #     + publication_hygiene_audit.json
+
+# 7c. v2 final catalog (CANONICAL entrypoint). Chains AT/CT decomposition
+#     (script 16) and bias-table generation (script 17) into one atomic,
+#     idempotent step. Hard-aborts BEFORE writing any bias table if AT/CT
+#     came out empty — the d5b anti-repeat guard. Re-run is overwrite-gated.
+python scripts/19_publish_catalog.py \
+  --residuals    data/mpc_scale_results_YYYYMMDD/merged_looo_results_published.parquet \
+  --observations data/mpc_scale_full/mpc_observations.parquet \
+  --orbits       data/mpc_scale_full/mpc_orbits.parquet \
+  --output-dir   data/bias_catalog/v2_YYYYMMDD
+#   → v2_YYYYMMDD/looo_results_atct.parquet   (raw: AT/CT-augmented residuals)
+#   → v2_YYYYMMDD/bias_catalog/               (corrected: bias_table.parquet + .csv + config)
+#   (sharded full run: --observations/--orbits are the *merged* source obs +
+#    catalog orbits; for a single-shard or 3500-obj run point them at that
+#    shard's mpc_observations.parquet / mpc_orbits.parquet. Add --validate-anchors
+#    to also emit the anchor validation report.)
 ```
+
+**v2 final catalog — use script 19, not 16 + 17 by hand.**
+`scripts/19_publish_catalog.py` is the canonical "produce the final catalog"
+entrypoint for v2. It runs AT/CT decomposition and then the bias table as a
+single command, emitting **both** the *raw* AT/CT-augmented residuals parquet
+and the *corrected* `bias_catalog/` directory under `--output-dir`. It exists
+to prevent a repeat of the v1/d5b incident — where the catalog shipped with
+empty AT/CT columns because scripts 16 and 17 were separate manual steps:
+script 17 only ever sees the augmented parquet, and the wrapper refuses to
+generate the bias table if AT/CT is all-null, so a catalog with empty AT/CT
+can no longer ship. Re-running is idempotent and overwrite-gated (pass
+`--overwrite` to regenerate in place).
 
 **First-accuracy pass:** compare the published catalog's 13 anchor stations to
 `data/bias_catalog/3500obj/`. v1 baseline: 13/13 anchors present, filter loss

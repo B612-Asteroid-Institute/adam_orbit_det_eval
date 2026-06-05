@@ -17,12 +17,12 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from adam_orbit_det_eval.looo.bias_table import (
     BootstrapConfig,
     bootstrap_mean_ci,
     compute_bias_table,
+    compute_residual_covariance,
 )
 
 
@@ -375,6 +375,261 @@ class TestOptionalATCT:
 # ---------------------------------------------------------------------------
 # Minimum-size filtering
 # ---------------------------------------------------------------------------
+
+
+class TestResidualCovariance:
+    """Per-station 2×2 residual covariance (RA/Dec frame)."""
+
+    # New column family must always be present in the output schema.
+    _RADEC_COV_COLS = (
+        "resid_var_ra", "resid_var_dec", "resid_cov_ra_dec", "resid_cov_n",
+    )
+
+    @staticmethod
+    def _station_rows(stn, ra_pattern, dec_pattern, n_objects=4):
+        """Replicate a fixed (RA, Dec) residual pattern across `n_objects`.
+
+        Every object gets the identical multiset of residuals, with zero
+        per-object mean, so the object-weighted RMS and the pooled per-obs
+        variance coincide exactly — the regime in which
+        `resid_var ≈ rms²` is an exact identity.
+        """
+        rows = []
+        for obj_idx in range(n_objects):
+            obj_id = f"{stn}_obj{obj_idx}"
+            for i, (ra, dec) in enumerate(zip(ra_pattern, dec_pattern)):
+                rows.append(dict(
+                    object_id=obj_id, obs_id=f"{obj_id}_{i}", stn=stn,
+                    residual_ra_arcsec=float(ra),
+                    residual_dec_arcsec=float(dec),
+                    chi2=1.0,
+                ))
+        return rows
+
+    def test_columns_present(self):
+        df = _make_looo_df(self._station_rows(
+            "S", [0.3, -0.3], [0.2, -0.2], n_objects=6,
+        ))
+        cfg = BootstrapConfig(n_resamples=100, random_seed=42)
+        table = compute_bias_table(
+            df, min_obs_per_group=10, min_objects_per_group=3,
+            max_hold_in_reduced_chi2=None, bootstrap=cfg,
+        )
+        for col in self._RADEC_COV_COLS:
+            assert col in table.columns, f"missing covariance column {col}"
+
+    def test_resid_var_matches_rms_squared(self):
+        """resid_var_ra ≈ rms_ra² and resid_var_dec ≈ rms_dec² (cross-check)."""
+        df = _make_looo_df(self._station_rows(
+            "S", [0.3, -0.3, 0.3, -0.3], [0.2, -0.2, 0.2, -0.2], n_objects=5,
+        ))
+        cfg = BootstrapConfig(n_resamples=100, random_seed=42)
+        table = compute_bias_table(
+            df, min_obs_per_group=10, min_objects_per_group=3,
+            max_hold_in_reduced_chi2=None, bootstrap=cfg,
+        )
+        row = table.iloc[0]
+        assert abs(row["resid_var_ra"] - row["rms_ra_arcsec"] ** 2) < 1e-12
+        assert abs(row["resid_var_dec"] - row["rms_dec_arcsec"] ** 2) < 1e-12
+        # Sanity on the absolute values too.
+        assert abs(row["resid_var_ra"] - 0.09) < 1e-12
+        assert abs(row["resid_var_dec"] - 0.04) < 1e-12
+
+    def test_resid_cov_n_equals_n_obs(self):
+        df = _make_looo_df(self._station_rows(
+            "S", [0.3, -0.3], [0.2, -0.2], n_objects=6,
+        ))
+        cfg = BootstrapConfig(n_resamples=50, random_seed=42)
+        table = compute_bias_table(
+            df, min_obs_per_group=10, min_objects_per_group=3,
+            max_hold_in_reduced_chi2=None, bootstrap=cfg,
+        )
+        row = table.iloc[0]
+        assert row["resid_cov_n"] == row["n_obs"] == 12
+
+    def test_cov_sign_positive_for_correlated_station(self):
+        """RA and Dec moving together → positive covariance."""
+        df = _make_looo_df(self._station_rows(
+            "POS", [1, 1, -1, -1], [1, 1, -1, -1], n_objects=4,
+        ))
+        cfg = BootstrapConfig(n_resamples=50, random_seed=42)
+        table = compute_bias_table(
+            df, min_obs_per_group=10, min_objects_per_group=3,
+            max_hold_in_reduced_chi2=None, bootstrap=cfg,
+        )
+        row = table.iloc[0]
+        assert row["resid_cov_ra_dec"] > 0
+        assert abs(row["resid_cov_ra_dec"] - 1.0) < 1e-12
+        # Diagonal cross-check still holds.
+        assert abs(row["resid_var_ra"] - row["rms_ra_arcsec"] ** 2) < 1e-12
+
+    def test_cov_sign_negative_for_anticorrelated_station(self):
+        df = _make_looo_df(self._station_rows(
+            "NEG", [1, 1, -1, -1], [-1, -1, 1, 1], n_objects=4,
+        ))
+        cfg = BootstrapConfig(n_resamples=50, random_seed=42)
+        table = compute_bias_table(
+            df, min_obs_per_group=10, min_objects_per_group=3,
+            max_hold_in_reduced_chi2=None, bootstrap=cfg,
+        )
+        row = table.iloc[0]
+        assert row["resid_cov_ra_dec"] < 0
+        assert abs(row["resid_cov_ra_dec"] - (-1.0)) < 1e-12
+
+    def test_cov_zero_for_independent_station(self):
+        """Orthogonal RA/Dec pattern → covariance exactly zero."""
+        df = _make_looo_df(self._station_rows(
+            "IND", [1, 1, -1, -1], [1, -1, 1, -1], n_objects=4,
+        ))
+        cfg = BootstrapConfig(n_resamples=50, random_seed=42)
+        table = compute_bias_table(
+            df, min_obs_per_group=10, min_objects_per_group=3,
+            max_hold_in_reduced_chi2=None, bootstrap=cfg,
+        )
+        row = table.iloc[0]
+        assert abs(row["resid_cov_ra_dec"]) < 1e-12
+
+    def test_helper_drops_nan_pairs(self):
+        """compute_residual_covariance counts only finite (RA, Dec) pairs."""
+        rows = self._station_rows("S", [0.3, -0.3], [0.2, -0.2], n_objects=4)
+        # Inject one NaN-RA observation; it must be excluded from resid_cov_n.
+        rows.append(dict(
+            object_id="S_obj0", obs_id="S_nan", stn="S",
+            residual_ra_arcsec=float("nan"), residual_dec_arcsec=0.2,
+            chi2=1.0,
+        ))
+        df = _make_looo_df(rows)
+        cov = compute_residual_covariance(df, ["stn"], ["ra", "dec"])
+        assert int(cov.iloc[0]["resid_cov_n"]) == 8  # 4 objects * 2 obs
+
+
+class TestATCTCovariance:
+    """AT/CT covariance mirrors the RA/Dec family when AT/CT are present."""
+
+    _ATCT_COV_COLS = ("resid_var_at", "resid_var_ct", "resid_cov_at_ct")
+
+    def test_atct_cov_null_when_columns_absent(self):
+        rows = []
+        for obj_idx in range(5):
+            for i in range(20):
+                rows.append(dict(
+                    object_id=f"obj{obj_idx}", obs_id=f"{obj_idx}_{i}",
+                    stn="S", residual_ra_arcsec=0.0, residual_dec_arcsec=0.0,
+                    chi2=1.0,
+                ))
+        df = _make_looo_df(rows)
+        cfg = BootstrapConfig(n_resamples=50, random_seed=42)
+        table = compute_bias_table(
+            df, min_obs_per_group=10, min_objects_per_group=3,
+            max_hold_in_reduced_chi2=None, bootstrap=cfg,
+        )
+        row = table.iloc[0]
+        for col in self._ATCT_COV_COLS:
+            assert col in table.columns
+            assert np.isnan(row[col])
+
+    def test_atct_cov_populated_and_sign_checked(self):
+        """AT/CT present → variances match rms² and covariance sign is right."""
+        rows = []
+        # Per object: AT/CT anti-correlated, zero per-object mean.
+        at_pat = [0.4, 0.4, -0.4, -0.4]
+        ct_pat = [-0.2, -0.2, 0.2, 0.2]
+        for obj_idx in range(5):
+            obj_id = f"obj{obj_idx}"
+            for i, (at, ct) in enumerate(zip(at_pat, ct_pat)):
+                rows.append(dict(
+                    object_id=obj_id, obs_id=f"{obj_id}_{i}", stn="S",
+                    residual_ra_arcsec=0.0, residual_dec_arcsec=0.0,
+                    residual_at_arcsec=float(at), residual_ct_arcsec=float(ct),
+                    chi2=1.0,
+                ))
+        df = _make_looo_df(rows)
+        cfg = BootstrapConfig(n_resamples=50, random_seed=42)
+        table = compute_bias_table(
+            df, min_obs_per_group=10, min_objects_per_group=3,
+            max_hold_in_reduced_chi2=None, bootstrap=cfg,
+        )
+        row = table.iloc[0]
+        assert abs(row["resid_var_at"] - 0.16) < 1e-12
+        assert abs(row["resid_var_ct"] - 0.04) < 1e-12
+        assert abs(row["resid_var_at"] - row["rms_at_arcsec"] ** 2) < 1e-12
+        assert abs(row["resid_var_ct"] - row["rms_ct_arcsec"] ** 2) < 1e-12
+        # AT up while CT down → negative covariance: -0.4 * 0.2 = -0.08.
+        assert row["resid_cov_at_ct"] < 0
+        assert abs(row["resid_cov_at_ct"] - (-0.08)) < 1e-12
+
+
+class TestConfidenceScore:
+    """Graded continuous confidence column + legacy boolean label."""
+
+    def test_confidence_columns_present(self):
+        rows = []
+        for obj_idx in range(5):
+            for i in range(20):
+                rows.append(dict(
+                    object_id=f"obj{obj_idx}", obs_id=f"{obj_idx}_{i}",
+                    stn="S", residual_ra_arcsec=0.0, residual_dec_arcsec=0.0,
+                    chi2=1.0,
+                ))
+        df = _make_looo_df(rows)
+        cfg = BootstrapConfig(n_resamples=50, random_seed=42)
+        table = compute_bias_table(
+            df, min_obs_per_group=10, min_objects_per_group=3,
+            max_hold_in_reduced_chi2=None, bootstrap=cfg,
+        )
+        assert "confidence_score" in table.columns
+        assert "high_confidence" in table.columns
+        score = table.iloc[0]["confidence_score"]
+        assert 0.0 <= score <= 1.0
+
+    def test_high_confidence_station_scores_high(self):
+        """Many objects, many obs, tight scatter → confidence_score >= 0.9."""
+        rng = np.random.default_rng(11)
+        rows = []
+        for obj_idx in range(50):          # 50 objects → n_objects large
+            obj_id = f"obj{obj_idx}"
+            for i in range(40):            # 2000 obs total → size term → 1
+                rows.append(dict(
+                    object_id=obj_id, obs_id=f"{obj_id}_{i}", stn="HI",
+                    residual_ra_arcsec=float(rng.normal(0.0, 0.1)),
+                    residual_dec_arcsec=float(rng.normal(0.0, 0.1)),
+                    chi2=1.0,
+                ))
+        df = _make_looo_df(rows)
+        cfg = BootstrapConfig(n_resamples=500, random_seed=42)
+        table = compute_bias_table(
+            df, min_obs_per_group=10, min_objects_per_group=3,
+            max_hold_in_reduced_chi2=None, bootstrap=cfg,
+        )
+        row = table.iloc[0]
+        assert row["confidence_score"] >= 0.9, row["confidence_score"]
+        assert bool(row["high_confidence"]) is True
+
+    def test_low_confidence_station_scores_low(self):
+        """n_obs < 20 → confidence_score <= 0.1 and high_confidence False."""
+        rng = np.random.default_rng(13)
+        rows = []
+        for obj_idx in range(3):           # 3 objects * 4 obs = 12 obs (< 20)
+            obj_id = f"obj{obj_idx}"
+            for i in range(4):
+                rows.append(dict(
+                    object_id=obj_id, obs_id=f"{obj_id}_{i}", stn="LO",
+                    residual_ra_arcsec=float(rng.normal(0.0, 0.3)),
+                    residual_dec_arcsec=float(rng.normal(0.0, 0.3)),
+                    chi2=1.0,
+                ))
+        df = _make_looo_df(rows)
+        cfg = BootstrapConfig(n_resamples=200, random_seed=42)
+        table = compute_bias_table(
+            df, min_obs_per_group=10, min_objects_per_group=3,
+            max_hold_in_reduced_chi2=None, bootstrap=cfg,
+        )
+        row = table.iloc[0]
+        assert row["confidence_score"] <= 0.1, row["confidence_score"]
+        assert bool(row["high_confidence"]) is False
+        # Critically, the low-confidence station is NOT dropped — graded
+        # confidence is a label, not a filter.
+        assert row["obs_code"] == "LO"
 
 
 class TestMinSizeFilter:

@@ -52,10 +52,21 @@ One row per (observatory) and one row per (observatory, program_code) with:
   rms_at_ci_low, rms_at_ci_high
   rms_ct_ci_low, rms_ct_ci_high
   sem_ra_arcsec, sem_dec_arcsec, sem_at_arcsec, sem_ct_arcsec
+  # Per-station 2×2 residual covariance — pooled per-observation, population
+  # (ddof=0) sample covariance about the group mean.  The genuine residual
+  # scatter (noise covariance) an OD weighting consumes; the off-diagonal
+  # measures the RA/Dec (resp. AT/CT) error correlation directly.
+  resid_var_ra, resid_var_dec, resid_cov_ra_dec, resid_cov_n
+  resid_var_at, resid_var_ct, resid_cov_at_ct   # null when AT/CT absent
   chi2_per_obs
   # True when the 95% CI on mean bias_ra OR bias_dec excludes zero — i.e.
   # the station shows a statistically resolvable bias in at least one axis.
   bias_significant
+  # Graded per-station confidence in [0, 1] (geometric mean of a sample-volume
+  # ramp and a CI-tightness term) and the legacy-compatible boolean label
+  # (confidence_score >= 0.5).  A publication-layer relaxation of the old hard
+  # high-confidence cutoff — no rows are dropped.
+  confidence_score, high_confidence
   sigma_model_source            # fraction of obs with empirical rmsra/rmsdec
   obs_epoch_start, obs_epoch_end  # MJD (TAI/UTC whatever LOOO used)
 
@@ -441,6 +452,128 @@ def compute_provenance(
 
 
 # ---------------------------------------------------------------------------
+# Per-station residual covariance (RA/Dec and AT/CT frames)
+# ---------------------------------------------------------------------------
+
+
+def _pairwise_cov(
+    x: np.ndarray, y: np.ndarray
+) -> Tuple[float, float, float, int]:
+    """
+    Population (ddof=0) 2-variable sample covariance over finite (x, y) pairs.
+
+    Returns ``(var_x, var_y, cov_xy, n_pairs)`` where the variances and the
+    covariance are taken about the sample means of the finite pairs.  Rows in
+    which either coordinate is non-finite are dropped (so AT/CT, where some
+    near-stationary observations have NaN projected residuals, still yields a
+    finite covariance).
+
+    The population (divide-by-N) estimator is used rather than the unbiased
+    (divide-by-N-1) one for two reasons:
+      * it is the maximum-likelihood noise covariance an OD weighting consumes;
+      * under the homogeneous, zero-mean sampling the cross-check fixtures are
+        built in, the diagonal then equals the object-weighted RMS² exactly
+        (see ``test_resid_var_matches_rms_squared``).
+    """
+    finite = np.isfinite(x) & np.isfinite(y)
+    n = int(finite.sum())
+    if n == 0:
+        return float("nan"), float("nan"), float("nan"), 0
+    xf = x[finite]
+    yf = y[finite]
+    dx = xf - xf.mean()
+    dy = yf - yf.mean()
+    var_x = float(np.mean(dx * dx))
+    var_y = float(np.mean(dy * dy))
+    cov_xy = float(np.mean(dx * dy))
+    return var_x, var_y, cov_xy, n
+
+
+def compute_residual_covariance(
+    df: pd.DataFrame,
+    group_cols: Iterable[str],
+    dims_available: Iterable[str],
+) -> pd.DataFrame:
+    """
+    Per-group 2×2 residual covariance in the RA/Dec frame (and the AT/CT frame
+    when those residuals are present).
+
+    Unlike the bias / RMS estimators in this module — which are *object*-
+    weighted (per-object mean first, then equal-weight across objects) — the
+    residual covariance is a *pooled per-observation* statistic: every held-out
+    residual in the group contributes one (RA, Dec) point and the 2×2 matrix is
+    the population (ddof=0) sample covariance over those points, taken about the
+    group mean.  This is the genuine scatter of the residuals — the noise
+    covariance an OD weighting needs — with the off-diagonal measuring the
+    RA/Dec error correlation directly (near zero when the two axes are
+    independent, signed and non-zero when they covary).
+
+    Relationship to the published RMS columns
+    ------------------------------------------
+    ``resid_var_ra`` equals ``rms_ra_arcsec²`` *exactly* only in the zero-bias,
+    homogeneous-sampling limit (equal observations per object, identical
+    per-object scatter).  On real biased data the two differ for two reasons:
+    this estimator is central (about the mean) whereas RMS is about zero, and
+    this estimator is observation-pooled whereas RMS is object-weighted.  The
+    cross-check fixtures are constructed in that limit so the equality is exact
+    there (asserted in the tests, not at runtime).
+
+    Parameters
+    ----------
+    df : DataFrame
+        Filtered LOOO results with the residual source columns.
+    group_cols : iterable of str
+        Group keys (e.g. ``["stn"]`` or ``["stn", "program_code"]``).
+    dims_available : iterable of str
+        Residual dimensions present in ``df`` (subset of ``_RESIDUAL_DIMS``).
+
+    Returns
+    -------
+    DataFrame keyed by ``group_cols`` with columns ``resid_var_ra``,
+    ``resid_var_dec``, ``resid_cov_ra_dec``, ``resid_cov_n`` and — only when
+    both AT and CT residuals are present — ``resid_var_at``, ``resid_var_ct``,
+    ``resid_cov_at_ct``.  ``resid_cov_n`` is the number of finite (RA, Dec)
+    pairs and equals the group's ``n_obs`` except where some residuals are NaN.
+    """
+    group_cols = list(group_cols)
+    dims_available = list(dims_available)
+    has_radec = "ra" in dims_available and "dec" in dims_available
+    has_atct = "at" in dims_available and "ct" in dims_available
+
+    out_rows = []
+    grouped = df.groupby(group_cols, dropna=False, sort=False)
+    for key, sub in grouped:
+        key_tuple = key if isinstance(key, tuple) else (key,)
+        row: Dict[str, object] = dict(zip(group_cols, key_tuple))
+
+        if has_radec:
+            ra = sub[_SOURCE_COL["ra"]].to_numpy(dtype=np.float64)
+            dec = sub[_SOURCE_COL["dec"]].to_numpy(dtype=np.float64)
+            var_ra, var_dec, cov_rd, n_rd = _pairwise_cov(ra, dec)
+        else:
+            var_ra = var_dec = cov_rd = float("nan")
+            n_rd = 0
+        row["resid_var_ra"] = var_ra
+        row["resid_var_dec"] = var_dec
+        row["resid_cov_ra_dec"] = cov_rd
+        row["resid_cov_n"] = n_rd
+
+        if has_atct:
+            at = sub[_SOURCE_COL["at"]].to_numpy(dtype=np.float64)
+            ct = sub[_SOURCE_COL["ct"]].to_numpy(dtype=np.float64)
+            var_at, var_ct, cov_ac, _ = _pairwise_cov(at, ct)
+            row["resid_var_at"] = var_at
+            row["resid_var_ct"] = var_ct
+            row["resid_cov_at_ct"] = cov_ac
+
+        out_rows.append(row)
+
+    if not out_rows:
+        return pd.DataFrame(columns=group_cols)
+    return pd.DataFrame(out_rows)
+
+
+# ---------------------------------------------------------------------------
 # Bias table construction
 # ---------------------------------------------------------------------------
 
@@ -719,6 +852,34 @@ def compute_bias_table(
         _fill_provenance(table, prov_prog, ["stn", "program_code"],
                          program_code_null=False)
 
+    # -----------------------------------------------------------------
+    # Per-station 2×2 residual covariance (RA/Dec, and AT/CT when present)
+    # -----------------------------------------------------------------
+    has_atct = "at" in dims_available and "ct" in dims_available
+    if not has_atct:
+        logger.warning(
+            "AT/CT residuals absent — resid_var_at/resid_var_ct/"
+            "resid_cov_at_ct left null."
+        )
+    radec_cov_cols = (
+        "resid_var_ra", "resid_var_dec", "resid_cov_ra_dec", "resid_cov_n",
+    )
+    atct_cov_cols = ("resid_var_at", "resid_var_ct", "resid_cov_at_ct")
+    cov_cols = radec_cov_cols + atct_cov_cols
+    for col in cov_cols:
+        if col not in table.columns:
+            table[col] = np.nan
+
+    cov_obs = compute_residual_covariance(df, ["stn"], dims_available)
+    _fill_group_columns(table, cov_obs, ["stn"], cov_cols,
+                        program_code_null=True)
+    if len(prog_df) > 0:
+        cov_prog = compute_residual_covariance(
+            prog_df, ["stn", "program_code"], dims_available,
+        )
+        _fill_group_columns(table, cov_prog, ["stn", "program_code"], cov_cols,
+                            program_code_null=False)
+
     # Rename stn → obs_code for the final catalogue schema
     table = table.rename(columns={"stn": "obs_code"})
 
@@ -741,6 +902,68 @@ def compute_bias_table(
         dec_excl = pd.Series(False, index=table.index)
     table["bias_significant"] = (ra_excl | dec_excl).fillna(False).astype(bool)
 
+    # -----------------------------------------------------------------
+    # Graded per-station confidence (continuous, in [0, 1])
+    # -----------------------------------------------------------------
+    # Replaces the legacy hard high-confidence cutoff (n_obs >= 100 AND
+    # n_objects >= 20), which dropped exactly the long-tail stations that
+    # observe short-arc NEOs.  No rows are dropped here — this is a
+    # publication-layer label, not a filter.
+    #
+    # The score is the geometric mean of two ingredients, each in [0, 1], so
+    # the product stays in [0, 1] and a weakness in either term pulls it down:
+    #
+    #   size  — sample volume, a log ramp (smoothstep) between N_CONF_LOW
+    #           (=20 obs, the low-confidence floor: at/below it size→0) and
+    #           N_CONF_FULL (=500 obs: at/above it size→1).  n_obs is the
+    #           natural volume axis and equals resid_cov_n.
+    #   prec  — precision of the mean-bias estimate: the RA/Dec residual scale
+    #           relative to the mean-bias bootstrap CI half-width.  A CI tight
+    #           relative to the scatter → ~1; a CI as wide as the scatter
+    #           → ~0.5; wider → →0.  This is where the object count enters: the
+    #           object-level bootstrap CI widens when a station is carried by
+    #           few objects, so a many-obs / few-object station is correctly
+    #           penalised even though its n_obs is large.
+    #
+    # high_confidence = confidence_score >= HIGH_CONF_THRESHOLD (0.5), chosen
+    # so a station near the legacy cutoff lands on the True side — rough
+    # backward compatibility with the dropped boolean filter.
+    N_CONF_LOW = 20.0
+    N_CONF_FULL = 500.0
+    PREC_FLOOR = 0.05  # arcsec; floors the scatter scale so a near-zero-RMS
+    #                    station's precision term stays well-defined.
+    HIGH_CONF_THRESHOLD = 0.5
+
+    n_obs_arr = table["n_obs"].to_numpy(dtype=np.float64)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t_size = (
+            np.log10(np.maximum(n_obs_arr, 1.0)) - np.log10(N_CONF_LOW)
+        ) / (np.log10(N_CONF_FULL) - np.log10(N_CONF_LOW))
+    t_size = np.clip(t_size, 0.0, 1.0)
+    size = t_size * t_size * (3.0 - 2.0 * t_size)  # smoothstep
+
+    def _col(name: str) -> np.ndarray:
+        if name in table.columns:
+            return table[name].to_numpy(dtype=np.float64)
+        return np.full(len(table), np.nan)
+
+    hw_ra = (_col("bias_ra_ci_high") - _col("bias_ra_ci_low")) / 2.0
+    hw_dec = (_col("bias_dec_ci_high") - _col("bias_dec_ci_low")) / 2.0
+    with np.errstate(invalid="ignore"):
+        hw = np.nanmean(np.vstack([hw_ra, hw_dec]), axis=0)
+        scale = np.nanmean(
+            np.vstack([_col("rms_ra_arcsec"), _col("rms_dec_arcsec")]), axis=0
+        ) + PREC_FLOOR
+        prec = scale / (scale + hw)
+    # When the CI is unavailable, fall back to the size term alone.
+    prec = np.where(np.isfinite(prec), prec, 1.0)
+
+    confidence = np.sqrt(
+        np.clip(size, 0.0, 1.0) * np.clip(prec, 0.0, 1.0)
+    )
+    table["confidence_score"] = confidence
+    table["high_confidence"] = confidence >= HIGH_CONF_THRESHOLD
+
     # Column ordering
     ordered = [
         "obs_code", "program_code", "n_objects", "n_obs",
@@ -761,8 +984,12 @@ def compute_bias_table(
         "rms_at_arcsec", "rms_at_ci_low", "rms_at_ci_high",
         "rms_ct_arcsec", "rms_ct_ci_low", "rms_ct_ci_high",
         "sem_ra_arcsec", "sem_dec_arcsec", "sem_at_arcsec", "sem_ct_arcsec",
+        # Per-station 2×2 residual covariance (pooled per-obs, ddof=0)
+        "resid_var_ra", "resid_var_dec", "resid_cov_ra_dec", "resid_cov_n",
+        "resid_var_at", "resid_var_ct", "resid_cov_at_ct",
         "chi2_per_obs",
         "bias_significant",
+        "confidence_score", "high_confidence",
         "sigma_model_source", "obs_epoch_start", "obs_epoch_end",
     ]
     # Ensure every expected column exists, even when AT/CT is unavailable
@@ -816,6 +1043,48 @@ def _fill_provenance(
                     table.at[i, col] = val
 
 
+def _fill_group_columns(
+    table: pd.DataFrame,
+    src: pd.DataFrame,
+    key_cols: Iterable[str],
+    value_cols: Iterable[str],
+    program_code_null: bool,
+) -> None:
+    """
+    In-place: copy ``value_cols`` from ``src`` into ``table`` for rows whose
+    keys match and whose program_code is/isn't null.
+
+    A generic version of :func:`_fill_provenance` used to graft the residual
+    covariance columns onto the assembled table.  Only columns present in
+    ``src`` are copied (so AT/CT covariance is skipped when absent).
+    """
+    key_cols = list(key_cols)
+    if src is None or len(src) == 0:
+        return
+    present = [c for c in value_cols if c in src.columns]
+    if not present:
+        return
+    src_indexed = src.set_index(key_cols)
+
+    mask = (
+        table["program_code"].isna()
+        if program_code_null
+        else table["program_code"].notna()
+    )
+
+    for i in table.index[mask]:
+        key = tuple(table.loc[i, k] for k in key_cols)
+        if len(key) == 1:
+            key = key[0]
+        if key in src_indexed.index:
+            row = src_indexed.loc[key]
+            for col in present:
+                val = row[col]
+                if isinstance(val, pd.Series):
+                    val = val.iloc[0]
+                table.at[i, col] = val
+
+
 def _empty_bias_table() -> pd.DataFrame:
     cols = [
         "obs_code", "program_code", "n_objects", "n_obs",
@@ -836,8 +1105,11 @@ def _empty_bias_table() -> pd.DataFrame:
         "rms_at_arcsec", "rms_at_ci_low", "rms_at_ci_high",
         "rms_ct_arcsec", "rms_ct_ci_low", "rms_ct_ci_high",
         "sem_ra_arcsec", "sem_dec_arcsec", "sem_at_arcsec", "sem_ct_arcsec",
+        "resid_var_ra", "resid_var_dec", "resid_cov_ra_dec", "resid_cov_n",
+        "resid_var_at", "resid_var_ct", "resid_cov_at_ct",
         "chi2_per_obs",
         "bias_significant",
+        "confidence_score", "high_confidence",
         "sigma_model_source", "obs_epoch_start", "obs_epoch_end",
     ]
     return pd.DataFrame(columns=cols)

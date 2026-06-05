@@ -21,6 +21,14 @@ from mpcq import MPCObservations
 # can be added to VERES2017_STN_CATALOG_OVERRIDES below.
 #
 # Key: MPC astcat code as stored in the observations table.
+#
+# NOTE on provenance (bead czs): Veres 2017's published tables are keyed by
+# observatory station and epoch, not by star catalog — its "Table 1" is the
+# per-station RMS table (see docs/veres-sigma-qualitative.md). The per-catalog
+# sigmas below are therefore catalog *position-precision class* estimates in
+# the spirit of that model, not verbatim Veres table rows. Entries added for
+# bead czs cite their actual basis (published catalog accuracy, or alias-of an
+# existing class peer) rather than a Veres table row that does not exist.
 # ---------------------------------------------------------------------------
 
 VERES2017_CATALOG_DEFAULTS: Dict[str, Tuple[float, float]] = {
@@ -30,6 +38,9 @@ VERES2017_CATALOG_DEFAULTS: Dict[str, Tuple[float, float]] = {
     "Gaia3":            (0.15, 0.15),
     "Gaia2":            (0.18, 0.18),  # Gaia DR2
     "Gaia1":            (0.25, 0.25),  # Gaia DR1
+    # --- Pan-STARRS reference catalogs (survey's own, Gaia-calibrated) ---
+    "PS1_DR1":          (0.08, 0.08),  # bead czs: Pan-STARRS DR1 catalog; astrometric accuracy ~0.08" rms vs Gaia (Magnier et al. 2020, ApJS 251:6). Post-dates Veres 2017; best-modern precision class.
+    "PS1_DR2":          (0.08, 0.08),  # bead czs: Pan-STARRS DR2; successor to DR1, same precision class.
     # --- ATLAS family ---
     "ATLAS2":           (0.20, 0.20),
     "ATLAS":            (0.25, 0.25),
@@ -40,15 +51,19 @@ VERES2017_CATALOG_DEFAULTS: Dict[str, Tuple[float, float]] = {
     "UCAC3":            (0.30, 0.30),
     "UCAC2":            (0.40, 0.40),
     "UCAC1":            (0.50, 0.50),
+    "URAT1":            (0.25, 0.25),  # bead czs: USNO Robotic Astrometric Telescope Cat 1 (Zacharias et al. 2015); modern USNO CCD astrograph, same precision class as UCAC4/UCAC5. Post-dates Veres 2017.
     # --- 2MASS ---
     "2MASS":            (0.20, 0.20),
     # --- USNO catalogs ---
     "USNOB1":           (0.50, 0.50),
+    "USNOB2":           (0.50, 0.50),  # bead czs: alias-of USNOB1 — USNO-B2.0, same position-precision class as B1.0
     "USNOA2":           (0.60, 0.60),
     "USNOSA2":          (0.60, 0.60),
+    "USNOSA1":          (0.60, 0.60),  # bead czs: alias-of USNOSA2 — USNO-SA1.0, same position-precision class (older revision)
     "USNOA1":           (0.80, 0.80),
     # --- GSC family ---
     "GSC":              (0.50, 0.50),
+    "GSC1.0":           (0.50, 0.50),  # bead czs: alias-of GSC1.1/1.2 — GSC 1.x family, same class
     "GSC1.1":           (0.50, 0.50),
     "GSC1.2":           (0.50, 0.50),
     "GSC2.2":           (0.40, 0.40),
@@ -63,8 +78,16 @@ VERES2017_CATALOG_DEFAULTS: Dict[str, Tuple[float, float]] = {
     "NOMAD":            (0.40, 0.40),
     "CMC14":            (0.35, 0.35),
     "CMC15":            (0.30, 0.30),
+    "MPOSC3":           (0.30, 0.30),  # bead czs: Minor Planet Observer Star Cat 3 (Warner); composite built on UCAC4/CMC/2MASS, precision class ~UCAC4/CMC15. Not in Veres 2017.
     "Tycho":            (0.06, 0.06),  # very precise but sparse
-    "AC":               (0.80, 0.80),
+    "Tyc2":             (0.06, 0.06),  # bead czs: alias-of Tycho — Tycho-2 catalog
+    "Hip1":             (0.06, 0.06),  # bead czs: alias-of Tycho-class — Hipparcos, same sub-0.1" precision class
+    # --- Pre-Hipparcos / photographic reference catalogs (~0.5-1") ---
+    "ACT":              (0.50, 0.50),  # bead czs: ACT Reference Cat (AC2000+Tycho, 1998); Tycho-era ~0.5" class
+    "AC":               (0.80, 0.80),  # Astrographic Catalogue (photographic)
+    "AGK3":             (1.00, 1.00),  # bead czs: Astronomische Gesellschaft Katalog 3 (1975); pre-Hipparcos ~1" class
+    "SAO":              (1.00, 1.00),  # bead czs: Smithsonian Astrophysical Obs Star Cat (1966); pre-Hipparcos ~1" class (cf. Yale)
+    "SAO1984":          (1.00, 1.00),  # bead czs: alias-of SAO — 1984 edition, same catalog/class
     "Yale":             (1.00, 1.00),
     "UNK":              (1.00, 1.00),  # unknown catalog — large default
 }

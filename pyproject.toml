@@ -30,6 +30,9 @@ dependencies = [
   "quivr>=0.8.1",
   "mpc-obscodes>=2026.3.25",
   "mpcq @ git+https://github.com/B612-Asteroid-Institute/mpcq.git@42e447b",
+  # EFCC18 catalog-debiasing preprocessing (scripts/preprocess_efcc18.py, bead
+  # 54t): HEALPix tile lookup at NSIDE=64 over debias_2018.tgz.
+  "healpy>=1.16.0",
   "ipykernel",
   "ipywidgets",
   "matplotlib>=3.10.1",

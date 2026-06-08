@@ -160,3 +160,87 @@ def test_orbit_fitter_abc_accepts_reference_orbit_kwarg():
     assert sig.parameters["reference_orbit"].default is None, (
         "reference_orbit must default to None for backward compatibility"
     )
+
+
+# ---------------------------------------------------------------------------
+# Bead tvg defensive guards — see kk/v2-prep-fitter-guard
+# ---------------------------------------------------------------------------
+
+
+def _load_cloud_shard_module():
+    """Import scripts/12_run_looo_cloud_shard.py as a module."""
+    scripts_path = pathlib.Path(__file__).parents[3] / "scripts" / "12_run_looo_cloud_shard.py"
+    spec = importlib.util.spec_from_file_location("_cloud_shard", scripts_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_enforce_scipy_gate_raises_without_env_var(monkeypatch):
+    """Without LOOO_ALLOW_SCIPY=1, the guard must raise ValueError naming bead tvg."""
+    from adam_orbit_det_eval.looo.core import _enforce_scipy_gate
+
+    monkeypatch.delenv("LOOO_ALLOW_SCIPY", raising=False)
+    with pytest.raises(ValueError, match="bead tvg"):
+        _enforce_scipy_gate()
+
+
+def test_enforce_scipy_gate_bypassed_by_env_var(monkeypatch):
+    """With LOOO_ALLOW_SCIPY=1, the guard must allow scipy through cleanly."""
+    from adam_orbit_det_eval.looo.core import _enforce_scipy_gate
+
+    monkeypatch.setenv("LOOO_ALLOW_SCIPY", "1")
+    _enforce_scipy_gate()  # must not raise
+
+
+def test_run_looo_for_object_blocks_scipy_path_by_default(monkeypatch):
+    """run_looo_for_object with orbit_fitter=None must fail-fast before any
+    per-pair work when LOOO_ALLOW_SCIPY is not set. Prevents accidental use
+    of the regressed scipy fit_least_squares path (bead tvg)."""
+    from unittest.mock import MagicMock
+
+    from adam_core.orbit_determination.evaluate import OrbitDeterminationObservations
+    from adam_core.orbits.orbits import Orbits
+
+    monkeypatch.delenv("LOOO_ALLOW_SCIPY", raising=False)
+
+    mock_obs = MagicMock(spec=OrbitDeterminationObservations)
+    mock_orbit = MagicMock(spec=Orbits)
+    mock_propagator = MagicMock()
+
+    with pytest.raises(ValueError, match="bead tvg"):
+        run_looo_for_object(
+            object_id="test_obj",
+            observations=mock_obs,
+            reference_orbit=mock_orbit,
+            propagator=mock_propagator,
+            orbit_fitter=None,
+        )
+
+
+def test_cloud_shard_get_orbit_fitter_rejects_scipy():
+    """Cloud shard runner must refuse --orbit-fitter=scipy with a ValueError
+    that names bead tvg."""
+    module = _load_cloud_shard_module()
+    with pytest.raises(ValueError, match="bead tvg"):
+        module.get_orbit_fitter("scipy", "/tmp/ignored")
+
+
+def test_cloud_shard_get_orbit_fitter_rejects_none():
+    """Cloud shard runner must refuse a None/unknown fitter selection."""
+    module = _load_cloud_shard_module()
+    with pytest.raises(ValueError, match="bead tvg"):
+        module.get_orbit_fitter(None, "/tmp/ignored")
+    with pytest.raises(ValueError, match="bead tvg"):
+        module.get_orbit_fitter("native", "/tmp/ignored")
+
+
+def test_cloud_shard_cli_rejects_scipy_choice():
+    """--orbit-fitter=scipy must fail at argparse time (choices restricted)."""
+    module = _load_cloud_shard_module()
+    with pytest.raises(SystemExit):
+        module.parse_args([
+            "--gcs-input-prefix", "gs://x/in",
+            "--gcs-output-prefix", "gs://x/out",
+            "--orbit-fitter", "scipy",
+        ])

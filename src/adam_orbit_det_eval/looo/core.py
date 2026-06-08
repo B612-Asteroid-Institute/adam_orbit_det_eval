@@ -27,6 +27,7 @@ errors reflect observatory quality, not ill-conditioning of the refitted orbit.
 """
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Type
 
@@ -74,6 +75,29 @@ class LOOOConfig:
     def __post_init__(self):
         if self.ls_kwargs is None:
             self.ls_kwargs = {}
+
+
+_SCIPY_GATE_ENV_VAR = "LOOO_ALLOW_SCIPY"
+_SCIPY_GATE_MESSAGE = (
+    "scipy fit_least_squares is gated pending bead tvg root-cause; "
+    "pass orbit_fitter=FindOrbOrbitFitter() explicitly "
+    f"(or set {_SCIPY_GATE_ENV_VAR}=1 to bypass for local debugging)."
+)
+
+
+def _enforce_scipy_gate() -> None:
+    """Block accidental use of the scipy fit_least_squares hold-in path.
+
+    bead tvg documents a 10-100x chi2 regression between 2026-03-16 and 2026-04
+    when ``fit_least_squares`` is run with ASSIST + an MPC warm-start orbit on
+    the same inputs that previously fit cleanly (witnesses 2020 ML22, 2020
+    TP96). Until that regression is root-caused, the LOOO pipeline must run
+    via an explicit ``OrbitFitter`` (FindOrb in cloud). Local callers that
+    still want the scipy path can set ``LOOO_ALLOW_SCIPY=1`` to bypass.
+    """
+    if os.environ.get(_SCIPY_GATE_ENV_VAR) == "1":
+        return
+    raise ValueError(_SCIPY_GATE_MESSAGE)
 
 
 class LOOOResult(qv.Table):
@@ -219,6 +243,11 @@ def run_looo_for_object(
     """
     if config is None:
         config = LOOOConfig()
+
+    # Fail-fast before any per-pair work if scipy DC would be reached without
+    # an explicit opt-in. See _enforce_scipy_gate / bead tvg.
+    if orbit_fitter is None:
+        _enforce_scipy_gate()
 
     # Comet exclusion
     if is_comet(object_id):

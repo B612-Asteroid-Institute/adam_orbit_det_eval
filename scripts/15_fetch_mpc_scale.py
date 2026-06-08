@@ -168,7 +168,16 @@ obs_stats AS (
     -- 2016 AU8 × D37 in pilot v12 run 20260510). Filter at eligibility
     -- counting; the post-fetch drop in write_shard removes them from the
     -- shard parquets themselves.
+    --
+    -- Source-data sanity filters (bead ie2, audit items C & D): drop rows
+    -- with non-physical observation time (obstime <= 0 / NULL) or RA outside
+    -- [0, 360). A small number of such defective rows exist in the v12 source;
+    -- filtering here at the BQ level means they never count toward eligibility
+    -- and never materialize into the shard parquets.
     WHERE obs.status != 'I'
+      AND obs.obstime > 0
+      AND obs.ra >= 0
+      AND obs.ra < 360
     GROUP BY obs.provid
     HAVING COUNT(DISTINCT obs.stn) >= {min_observatories}
 )

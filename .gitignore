@@ -28,6 +28,8 @@ data/mpc_scale_*/
 data/pilot_validation/
 # EFCC18 debiasing cache (regenerable from debias_2018.tgz via scripts/preprocess_efcc18.py)
 data/efcc18/
+# One-shot audit reports (e.g. Veres fallback coverage, bead ie2)
+data/audit/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

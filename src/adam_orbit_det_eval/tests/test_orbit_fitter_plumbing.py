@@ -8,6 +8,7 @@ import importlib.util
 import inspect
 import pathlib
 import pickle
+import sys
 
 import pytest
 
@@ -43,16 +44,27 @@ def test_scripts_get_orbit_fitter_scipy_returns_none():
     assert module.get_orbit_fitter("scipy", "/tmp/ignored") is None
 
 
-def test_get_orbit_fitter_strict_aborts_on_missing_findorb():
-    """With strict=True (default), missing FindOrb must call sys.exit(1)."""
+def test_get_orbit_fitter_strict_aborts_on_missing_findorb(monkeypatch):
+    """With strict=True (default), missing FindOrb must call sys.exit(1).
+
+    adam_fo is installed in this environment, so we force the import to fail by
+    masking the module in sys.modules (None makes ``import`` raise ImportError).
+    This exercises the strict-abort branch regardless of what is installed.
+    """
+    monkeypatch.setitem(sys.modules, "adam_fo.find_orb_orbit_fitter", None)
     module = _load_script_module()
     with pytest.raises(SystemExit) as exc_info:
         module.get_orbit_fitter("findorb", "/tmp/ignored", strict=True)
     assert exc_info.value.code == 1
 
 
-def test_get_orbit_fitter_nonstrict_returns_none_for_missing_findorb():
-    """With strict=False, missing FindOrb falls back to None (scipy DC)."""
+def test_get_orbit_fitter_nonstrict_returns_none_for_missing_findorb(monkeypatch):
+    """With strict=False, missing FindOrb falls back to None (scipy DC).
+
+    See note above: the FindOrb import is masked so the fallback branch runs
+    even though adam_fo is importable in this environment.
+    """
+    monkeypatch.setitem(sys.modules, "adam_fo.find_orb_orbit_fitter", None)
     module = _load_script_module()
     result = module.get_orbit_fitter("findorb", "/tmp/ignored", strict=False)
     assert result is None
@@ -63,10 +75,10 @@ def test_orbit_fitter_picklable():
     # None (scipy fallback) must roundtrip
     assert pickle.loads(pickle.dumps(None)) is None
 
-    # FindOrb if available
+    # FindOrb if available. fo_result_dir is now a required keyword-only arg.
     try:
         from adam_fo.find_orb_orbit_fitter import FindOrbOrbitFitter
-        fitter = FindOrbOrbitFitter()
+        fitter = FindOrbOrbitFitter(fo_result_dir="/tmp/ignored")
         restored = pickle.loads(pickle.dumps(fitter))
         assert type(restored) is FindOrbOrbitFitter
     except ImportError:

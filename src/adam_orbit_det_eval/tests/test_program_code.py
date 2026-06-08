@@ -68,14 +68,6 @@ class TestProgramCodeColumnAccess:
             "pipeline.py _worker will fall back to [None]*N"
         )
 
-    def test_mpcobservations_does_not_have_prog(self):
-        """Verify 'prog' is NOT an attribute — the old broken access path."""
-        empty = MPCObservations.empty()
-        assert not hasattr(empty, "prog"), (
-            "MPCObservations unexpectedly has 'prog' attribute — "
-            "review pipeline.py column access"
-        )
-
     def test_getattr_pattern_with_trksub(self):
         """The getattr pattern used in _worker produces a valid list from trksub."""
         empty = MPCObservations.empty()

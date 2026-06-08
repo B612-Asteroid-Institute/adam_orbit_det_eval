@@ -72,7 +72,7 @@ line-length = 88
 profile = "black"
 
 [tool.pytest.ini_options]
-norecursedirs = ["__pypackages__"]
+norecursedirs = ["__pypackages__", ".claude", ".venv", ".git", "data", "logs", "reports"]
 
 [tool.ruff]
 line-length = 110

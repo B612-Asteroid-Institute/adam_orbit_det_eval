@@ -140,6 +140,43 @@ Less ambitious version of "per-time-period LOOO" below. Populate `obs_epoch_star
 
 # Design notes (v2 pipeline-level)
 
+## LOOO group keys + time filter — configurable architecture (RESOLVED, 2026-06-08)
+
+The v2 pipeline takes two configuration axes that together define a "run profile":
+
+**Axis 1 — Group keys (hold-out level + aggregation level).** Each of {`stn`, `prog`, `band`, `astcat`} is independently togglable. The configured set becomes both:
+- The **LOOO hold-out unit**: each unique tuple is held out as a unit per object (e.g. with `[stn, prog, band]`, observations from station 568 in program "2" through filter "r" are held out together, separately from station 568 program "_" through filter "i"). This is more granular than v1's per-station hold-out.
+- The **bias_table aggregation key**: residual rows are grouped by the same tuple. Configurable group keys in `bias_table.py` accept any subset.
+
+**Axis 2 — Observation time filter (parametric).** A pre-LOOO step filters observations by `obstime_min` / `obstime_max`. Single mechanism, reused for all time-window variants (pre/post-2017 now, finer cuts later).
+
+### astcat — decision and rationale
+
+**astcat is NOT a default hold-out or aggregation dimension. It is available as an optional diagnostic.**
+
+EFCC18 preprocessing (the headline v2 change) corrects mean catalog bias at per-(catalog, HEALPix-tile-at-order-64) resolution before LOOO runs. czs's coverage audit (bead `ie2` follow-up + `czs` Veres extension) confirmed ~98% of v1 observations are either EFCC18-corrected (52.4%) or Gaia-reference no-ops (45.8%); only ~2% genuinely uncorrectable. Post-EFCC18, the catalog signal has already been pulled out — using `astcat` as an LOOO hold-out dimension would mostly be measuring noise on a much smaller sample, at the cost of substantially more refits per object.
+
+**What we keep instead:** an off-by-default toggle. If a pilot result shows residual catalog structure (e.g. EFCC18 coverage on the actual v2 input shard turns out worse than 98%, or per-(stn, astcat) interactions survive EFCC18's factorization), flip `astcat` on. The architecture supports it without code changes.
+
+### Default profile + named variants
+
+| Profile | Group keys | Time filter | Notes |
+|---|---|---|---|
+| **v2_full** | `stn, prog, band` | none | Primary v2 catalog. astcat off. |
+| **v2_full_pre_2017** | `stn, prog, band` | `obstime ≤ 2017-01-01` | Apples-to-apples vs Veres 2017 Table 1. |
+| **v2_full_post_2017** | `stn, prog, band` | `obstime > 2017-01-01` | "What changed since Veres" per station. |
+
+Each profile produces a separate published catalog (`data/mpc_scale_results_<date>_<profile>/`).
+
+### Future extensibility
+
+Time cuts are parametric — add new profiles (per-year, per-quarter, pre/post specific known events like CCD swaps) by adding config entries, no pipeline change. Per-program-code curated-station lists and per-time-period curated-station lists (sections below) can layer on top of this by overriding the default group-key set.
+
+### Replaces / resolves
+
+- The "pipeline decision required" notes in the per-(station, astcat) and per-(station, band) sections are resolved here. Per-band is in by default; per-astcat is configurable, off by default.
+- The "Pre-2017 / post-2017 split runs" section below is now implemented as named profiles on this single pipeline rather than as separate code paths.
+
 ## Sigma-pathology handling — two-prong (REQUIRED, 2026-05-15)
 
 Surfaced by zw0 investigation. The `max_object_mean_chi2=50.0` filter at `src/adam_orbit_det_eval/looo/bias_table.py:537` uses chi² built from per-obs reported sigmas. N86 reports nanoarcsec sigmas → chi² ~10⁸; a single N86 obs on a shared object pushes `mean_chi²` > 50 and indicts that object at every station that observed it. Net effect on v1: 373,050 non-N86 rows dropped across 780 stations, 4–15% loss at every Veres anchor.

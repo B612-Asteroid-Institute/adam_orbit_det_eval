@@ -110,6 +110,7 @@ def _worker(
     sigma_model: str = "veres2017",
     orbit_fitter: Optional[OrbitFitter] = None,
     gcs_prefix: Optional[str] = None,
+    group_by: Optional[List[str]] = None,
 ) -> Tuple[str, int]:
     """
     Worker function executed in a subprocess.
@@ -195,12 +196,22 @@ def _worker(
         return object_id, 0
 
     # --- Run LOOO ---
+    # Per-observation group-key source columns, pulled directly from the MPC
+    # observations (parallel arrays — mpc_to_od_observations is size-preserving,
+    # so indices stay aligned with od_obs). band is plumbed the same way as
+    # astcat / prog rather than being routed through adam_core.Observations
+    # (bead wl0 pre-flight).
     astcats = obj_mpc_obs.astcat.to_pylist()
     program_codes_col = getattr(obj_mpc_obs, 'prog', None)
     if program_codes_col is not None:
         program_codes = program_codes_col.to_pylist()
     else:
         program_codes = [None] * len(obj_mpc_obs)
+    bands_col = getattr(obj_mpc_obs, 'band', None)
+    if bands_col is not None:
+        bands = bands_col.to_pylist()
+    else:
+        bands = [None] * len(obj_mpc_obs)
     try:
         result = run_looo_for_object(
             object_id=object_id,
@@ -210,6 +221,8 @@ def _worker(
             config=config,
             astcats=astcats,
             program_codes=program_codes,
+            bands=bands,
+            group_by=group_by,
             orbit_fitter=orbit_fitter,
         )
     except Exception as e:
@@ -260,6 +273,7 @@ def run_looo_pipeline(
     sigma_model: str = "veres2017",
     orbit_fitter: Optional[OrbitFitter] = None,
     gcs_checkpoint_store: Optional[GCSCheckpointStore] = None,
+    group_by: Optional[List[str]] = None,
 ) -> LOOOResult:
     """
     Run LOOO cross-validation for all (or a subset of) objects, in parallel.
@@ -298,6 +312,9 @@ def run_looo_pipeline(
         checkpoints are downloaded into the local checkpoint dir (resume).
         During execution each per-object checkpoint is uploaded after write.
         A SIGTERM handler is registered to flush state on spot preemption.
+    group_by : list of str, optional
+        Subset of {stn, prog, band, astcat} defining the LOOO hold-out unit
+        (bead wl0). Defaults to ``[stn, prog, band]`` (the v2_full profile).
 
     Returns
     -------
@@ -370,6 +387,7 @@ def run_looo_pipeline(
                 sigma_model,
                 orbit_fitter,
                 gcs_prefix,
+                group_by,
             ): oid
             for oid in remaining
         }

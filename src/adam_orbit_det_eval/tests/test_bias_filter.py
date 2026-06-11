@@ -34,6 +34,7 @@ def _make_row(
     chi2: float = 1.0,
     astcat: Optional[str] = "Gaia2",
     program_code: Optional[str] = None,
+    band: Optional[str] = None,
     n_obs_held_out: int = 5,
     n_obs_remaining: int = 50,
     arc_length_remaining_days: float = 365.0,
@@ -56,6 +57,7 @@ def _make_row(
         chi2=chi2,
         astcat=astcat,
         program_code=program_code,
+        band=band,
         n_obs_held_out=n_obs_held_out,
         n_obs_remaining=n_obs_remaining,
         arc_length_remaining_days=arc_length_remaining_days,
@@ -75,7 +77,7 @@ def _rows_to_table(rows: List[Dict[str, Any]]) -> pa.Table:
     arrays = {}
     for c in cols:
         vals = [r[c] for r in rows]
-        if c in {"object_id", "obs_id", "stn", "astcat", "program_code"}:
+        if c in {"object_id", "obs_id", "stn", "astcat", "program_code", "band"}:
             arrays[c] = pa.array(vals, type=pa.large_string())
         elif c in {
             "residual_ra_arcsec",

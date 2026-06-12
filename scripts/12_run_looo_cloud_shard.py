@@ -280,11 +280,45 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--group-by",
         type=str,
-        default="stn,prog,band",
+        default=None,
         help=(
             "Comma-separated LOOO hold-out / aggregation keys "
             "(subset of stn,prog,band,astcat; default: stn,prog,band). "
-            "Each unique tuple is held out as a unit per object (bead wl0)."
+            "Each unique tuple is held out as a unit per object (bead wl0). "
+            "Overrides the --profile value when both are given."
+        ),
+    )
+    p.add_argument(
+        "--profile",
+        type=str,
+        default=None,
+        help=(
+            "Named run profile (e.g. v2_full, v2_full_pre_2017, "
+            "v2_full_post_2017) setting group-by + obstime window together "
+            "(bead tcu). Explicit --group-by/--obstime-min/--obstime-max "
+            "flags override the profile's individual values. NOTE: the "
+            "profile's output-dir suffix does NOT modify --gcs-output-prefix; "
+            "include the profile name in the prefix when launching the job."
+        ),
+    )
+    p.add_argument(
+        "--obstime-min",
+        type=str,
+        default=None,
+        help=(
+            "ISO date (UTC), e.g. 2017-01-01. Keep only observations with "
+            "obstime strictly after this bound, applied BEFORE the LOOO "
+            "refits (bead tcu)."
+        ),
+    )
+    p.add_argument(
+        "--obstime-max",
+        type=str,
+        default=None,
+        help=(
+            "ISO date (UTC), e.g. 2017-01-01. Keep only observations with "
+            "obstime at or before this bound, applied BEFORE the LOOO "
+            "refits (bead tcu)."
         ),
     )
     return p.parse_args(argv)
@@ -351,17 +385,27 @@ def main(argv: list[str] | None = None) -> None:
         results_path = local_output / "looo_results.parquet"
 
         # --- Run LOOO pipeline ---
-        from adam_orbit_det_eval.looo.core import _validate_group_by
         from adam_orbit_det_eval.looo.pipeline import run_looo_pipeline
+        from adam_orbit_det_eval.looo.profiles import resolve_run_options
 
-        group_by = _validate_group_by(
-            [k.strip() for k in args.group_by.split(",") if k.strip()]
+        options = resolve_run_options(
+            profile=args.profile,
+            group_by=(
+                [k.strip() for k in args.group_by.split(",") if k.strip()]
+                if args.group_by is not None
+                else None
+            ),
+            obstime_min=args.obstime_min,
+            obstime_max=args.obstime_max,
         )
+        group_by = list(options.group_by)
 
         logger.info(
             f"Starting LOOO pipeline: propagator={args.propagator}, "
             f"orbit_fitter={args.orbit_fitter}, max_processes={args.max_processes}, "
-            f"group_by={group_by}"
+            f"profile={options.profile or '(ad-hoc)'}, group_by={group_by}, "
+            f"obstime window=({options.obstime_min or '-inf'}, "
+            f"{options.obstime_max or '+inf'}]"
         )
         results = run_looo_pipeline(
             mpc_observations=mpc_obs,
@@ -373,6 +417,8 @@ def main(argv: list[str] | None = None) -> None:
             gcs_checkpoint_store=gcs_store,
             max_processes=args.max_processes,
             group_by=group_by,
+            obstime_min=options.obstime_min,
+            obstime_max=options.obstime_max,
         )
         logger.info(f"LOOO pipeline complete: {len(results)} result rows")
 

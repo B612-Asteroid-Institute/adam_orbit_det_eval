@@ -24,11 +24,14 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional, Tuple, Type
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 import quivr as qv
+
+from adam_core.time import Timestamp
 
 from adam_core.orbit_determination.orbit_fitter import OrbitFitter
 from adam_core.propagator.propagator import Propagator
@@ -41,6 +44,63 @@ from .core import LOOOConfig, LOOOResult, run_looo_for_object
 from .gcs_checkpoint import GCSCheckpointStore
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Pre-LOOO observation-time filter (bead tcu)
+# ---------------------------------------------------------------------------
+
+def _iso_to_mjd_utc(iso_date: str) -> float:
+    """Convert an ISO-8601 date/time string to MJD (UTC scale)."""
+    return float(Timestamp.from_iso8601([iso_date], scale="utc").mjd()[0].as_py())
+
+
+def filter_observations_by_obstime(
+    mpc_observations: MPCObservations,
+    obstime_min: Optional[str] = None,
+    obstime_max: Optional[str] = None,
+) -> MPCObservations:
+    """
+    Filter observations to the (obstime_min, obstime_max] window.
+
+    This is the pre-LOOO step of the v2 parametric time filter (bead tcu,
+    docs/v2-scope.md): it runs BEFORE any refit so the hold-in orbit only
+    sees in-window data. Window semantics follow the v2 pre/post-2017
+    partition — an observation is kept when ``obstime > obstime_min`` AND
+    ``obstime <= obstime_max`` (min exclusive, max inclusive), so
+    ``obstime_max=2017-01-01`` and ``obstime_min=2017-01-01`` split the
+    archive with no overlap and no gap.
+
+    Parameters
+    ----------
+    mpc_observations : MPCObservations
+        Input observations.
+    obstime_min, obstime_max : str, optional
+        ISO-8601 bounds (UTC), e.g. ``"2017-01-01"``. None = unbounded.
+        When either bound is set, observations with a null obstime are
+        dropped (their window membership cannot be established).
+
+    Returns
+    -------
+    MPCObservations
+        The in-window subset (the input table, unchanged, if no bound is set).
+    """
+    if obstime_min is None and obstime_max is None:
+        return mpc_observations
+
+    mjd = mpc_observations.obstime.mjd().to_numpy(zero_copy_only=False)
+    mask = np.isfinite(mjd)
+    if obstime_min is not None:
+        mask &= mjd > _iso_to_mjd_utc(obstime_min)
+    if obstime_max is not None:
+        mask &= mjd <= _iso_to_mjd_utc(obstime_max)
+
+    filtered = mpc_observations.apply_mask(pa.array(mask))
+    logger.info(
+        f"obstime filter ({obstime_min or '-inf'}, {obstime_max or '+inf'}]: "
+        f"{len(filtered)}/{len(mpc_observations)} observations kept"
+    )
+    return filtered
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +334,8 @@ def run_looo_pipeline(
     orbit_fitter: Optional[OrbitFitter] = None,
     gcs_checkpoint_store: Optional[GCSCheckpointStore] = None,
     group_by: Optional[List[str]] = None,
+    obstime_min: Optional[str] = None,
+    obstime_max: Optional[str] = None,
 ) -> LOOOResult:
     """
     Run LOOO cross-validation for all (or a subset of) objects, in parallel.
@@ -315,6 +377,14 @@ def run_looo_pipeline(
     group_by : list of str, optional
         Subset of {stn, prog, band, astcat} defining the LOOO hold-out unit
         (bead wl0). Defaults to ``[stn, prog, band]`` (the v2_full profile).
+    obstime_min, obstime_max : str, optional
+        ISO-8601 bounds of the pre-LOOO observation-time window (bead tcu):
+        kept observations satisfy ``obstime_min < obstime <= obstime_max``.
+        The filter runs before any refit, so hold-in fits only see in-window
+        data, and the per-pair eligibility criteria (min obs remaining, min
+        arc length, held-out fraction) are evaluated on the windowed
+        observation set — an object that passes over its full arc may be
+        excluded within a window.
 
     Returns
     -------
@@ -325,6 +395,13 @@ def run_looo_pipeline(
         config = LOOOConfig()
     if max_processes is None:
         max_processes = mp.cpu_count()
+
+    # Pre-LOOO observation-time window (bead tcu). Applied before the worker
+    # input parquet is written so every downstream step (object selection,
+    # eligibility, hold-in fits, held-out predictions) sees only in-window data.
+    mpc_observations = filter_observations_by_obstime(
+        mpc_observations, obstime_min=obstime_min, obstime_max=obstime_max
+    )
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)

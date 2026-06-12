@@ -142,7 +142,7 @@ Less ambitious version of "per-time-period LOOO" below. Populate `obs_epoch_star
 
 ## LOOO group keys + time filter — configurable architecture (RESOLVED, 2026-06-08)
 
-*Implementation: bead wl0 ships the configurable group-key plumbing (Axis 1 — the `--group-by` flag, tuple hold-out unit, and `compute_bias_table(group_by=...)` per-tuple + per-station rollup rows). Axis 2 (the parametric obstime filter + named run-profile config layer) is sibling bead tcu, which builds on wl0.*
+*Implementation: bead wl0 ships the configurable group-key plumbing (Axis 1 — the `--group-by` flag, tuple hold-out unit, and `compute_bias_table(group_by=...)` per-tuple + per-station rollup rows). Bead tcu ships Axis 2: the pre-LOOO obstime filter (`--obstime-min`/`--obstime-max`, window = min-exclusive/max-inclusive so the pre/post-2017 profiles partition the archive exactly as in the table below) and the named run-profile layer (`looo/profiles.py`, `--profile` on `02_run_looo.py` and `12_run_looo_cloud_shard.py`; explicit flags override profile values; the resolved profile is recorded in `run_config.json`).*
 
 The v2 pipeline takes two configuration axes that together define a "run profile":
 

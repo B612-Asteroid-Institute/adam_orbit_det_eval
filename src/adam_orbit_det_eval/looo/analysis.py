@@ -13,6 +13,7 @@ look at, e.g., only objects with arc_length_remaining > 30 days, or only
 observations with n_obs_remaining >= 20, to control for confounds.
 """
 
+import logging
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -22,6 +23,8 @@ from pathlib import Path
 from typing import Optional
 
 from .core import LOOOResult
+
+logger = logging.getLogger(__name__)
 
 
 class ObservatoryStats(qv.Table):
@@ -490,6 +493,14 @@ def compute_program_code_stats(
     program_code comes from the MPC `prog` field and indicates which
     submitting program / survey the observation belongs to.
 
+    .. deprecated:: bead wl0
+        This produces a stats table keyed on ``(stn, program_code)`` only. The
+        v2 pipeline computes per-group rows at the configured tuple resolution
+        directly in :func:`adam_orbit_det_eval.looo.bias_table.compute_bias_table`
+        (``group_by=[..., "prog", ...]``). Prefer the bias_table per-group rows;
+        this function is retained unchanged for backward compatibility with
+        existing downstream consumers and will be removed in a future cleanup.
+
     Parameters
     ----------
     results : LOOOResult
@@ -498,6 +509,11 @@ def compute_program_code_stats(
     min_obs_per_group : int
         Minimum observations per (stn, program_code) group to report.
     """
+    logger.warning(
+        "compute_program_code_stats is deprecated (bead wl0): prefer "
+        "compute_bias_table(group_by=[..., 'prog', ...]) per-group rows. "
+        "Retained unchanged for backward compatibility."
+    )
     filtered = _filter_results(
         results,
         min_obs_remaining=min_obs_remaining,

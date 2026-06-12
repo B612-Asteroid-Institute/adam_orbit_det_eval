@@ -277,6 +277,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Number of parallel worker processes (default: all CPUs)",
     )
+    p.add_argument(
+        "--group-by",
+        type=str,
+        default="stn,prog,band",
+        help=(
+            "Comma-separated LOOO hold-out / aggregation keys "
+            "(subset of stn,prog,band,astcat; default: stn,prog,band). "
+            "Each unique tuple is held out as a unit per object (bead wl0)."
+        ),
+    )
     return p.parse_args(argv)
 
 
@@ -341,11 +351,17 @@ def main(argv: list[str] | None = None) -> None:
         results_path = local_output / "looo_results.parquet"
 
         # --- Run LOOO pipeline ---
+        from adam_orbit_det_eval.looo.core import _validate_group_by
         from adam_orbit_det_eval.looo.pipeline import run_looo_pipeline
+
+        group_by = _validate_group_by(
+            [k.strip() for k in args.group_by.split(",") if k.strip()]
+        )
 
         logger.info(
             f"Starting LOOO pipeline: propagator={args.propagator}, "
-            f"orbit_fitter={args.orbit_fitter}, max_processes={args.max_processes}"
+            f"orbit_fitter={args.orbit_fitter}, max_processes={args.max_processes}, "
+            f"group_by={group_by}"
         )
         results = run_looo_pipeline(
             mpc_observations=mpc_obs,
@@ -356,6 +372,7 @@ def main(argv: list[str] | None = None) -> None:
             orbit_fitter=orbit_fitter,
             gcs_checkpoint_store=gcs_store,
             max_processes=args.max_processes,
+            group_by=group_by,
         )
         logger.info(f"LOOO pipeline complete: {len(results)} result rows")
 

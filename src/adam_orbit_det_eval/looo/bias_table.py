@@ -82,7 +82,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -105,6 +105,47 @@ _SOURCE_COL: Dict[str, str] = {
     "at": "residual_at_arcsec",
     "ct": "residual_ct_arcsec",
 }
+
+#: Map each configurable group-key name to its column in the LOOO DataFrame.
+#: ``prog`` is stored as ``program_code`` for historical reasons (bead 43z);
+#: the others map to themselves. See bead wl0 / docs/v2-scope.md.
+_GROUP_KEY_TO_COL: Dict[str, str] = {
+    "stn": "stn",
+    "prog": "program_code",
+    "band": "band",
+    "astcat": "astcat",
+}
+
+#: Default v2 ("v2_full") aggregation keys — must mirror core.DEFAULT_GROUP_BY.
+DEFAULT_GROUP_BY: Tuple[str, ...] = ("stn", "prog", "band")
+
+#: Sentinel used to make NULL group-key values matchable in index lookups
+#: (pandas treats NaN != NaN, so a raw NaN key never matches on .loc).
+_NULL_KEY = "\x00__NULL__"
+
+
+def _norm_key_value(v: object) -> object:
+    """Map a NULL-ish group-key value to a stable sentinel for index matching."""
+    if v is None or v is pd.NA:
+        return _NULL_KEY
+    if isinstance(v, float) and np.isnan(v):
+        return _NULL_KEY
+    return v
+
+
+def _rollup_mask(table: pd.DataFrame, extra_cols: Iterable[str]) -> pd.Series:
+    """Boolean mask selecting per-station rollup rows.
+
+    A rollup row is one where every non-``stn`` group-key column is NULL — the
+    per-station aggregate that anchor sanity checks depend on. With no extra
+    columns (``group_by=["stn"]``) every row is a rollup row.
+    """
+    extra_cols = list(extra_cols)
+    mask = pd.Series(True, index=table.index)
+    for c in extra_cols:
+        if c in table.columns:
+            mask &= table[c].isna()
+    return mask
 
 
 # ---------------------------------------------------------------------------
@@ -666,6 +707,7 @@ def _aggregate_one_group_key(
 def compute_bias_table(
     looo_df: pd.DataFrame,
     *,
+    group_by: Optional[List[str]] = None,
     observations_df: Optional[pd.DataFrame] = None,
     min_obs_per_group: int = 10,
     min_objects_per_group: int = 3,
@@ -674,19 +716,37 @@ def compute_bias_table(
     bootstrap: Optional[BootstrapConfig] = None,
 ) -> pd.DataFrame:
     """
-    Compute the per-observatory bias table with bootstrap CIs.
+    Compute the bias table with bootstrap CIs at a configurable group key.
 
-    Produces one row per observatory (with program_code null) and one row per
-    (observatory, program_code) where program_code is non-null.  Groups below
-    `min_obs_per_group` or `min_objects_per_group` are dropped.
+    Two row "levels" are emitted (bead wl0):
+
+    * **Per-station rollup rows** — grouped on ``stn`` only, with every other
+      configured group-key column NULL. Always emitted; anchor sanity checks
+      and apples-to-apples v1↔v2 comparison depend on these. The output is a
+      strict superset of v1's per-station table: existing consumers that filter
+      ``WHERE program_code IS NULL [AND band IS NULL AND astcat IS NULL]`` get
+      exactly the rollup.
+    * **Per-tuple rows** — grouped on the full configured key (e.g.
+      ``[stn, prog, band]``), for every tuple with at least one non-NULL
+      non-``stn`` key. Tuples whose non-``stn`` keys are all NULL are omitted
+      here because they coincide with the rollup row.
+
+    With ``group_by=["stn"]`` only rollup rows are produced — this reproduces
+    v1 per-station behaviour. Groups below ``min_obs_per_group`` or
+    ``min_objects_per_group`` are dropped.
 
     Parameters
     ----------
     looo_df : DataFrame
         LOOO results with at least: object_id, obs_id, stn,
         residual_ra_arcsec, residual_dec_arcsec, chi2.  Optional:
-        program_code, residual_at_arcsec, residual_ct_arcsec,
+        program_code, band, astcat, residual_at_arcsec, residual_ct_arcsec,
         hold_in_reduced_chi2.
+    group_by : list of str, optional
+        Subset of {stn, prog, band, astcat} for the aggregation key. ``prog``
+        maps to the ``program_code`` column. Defaults to ``[stn, prog, band]``
+        (the v2_full profile). A configured key whose column is absent from
+        ``looo_df`` is treated as all-NULL (collapses out of the tuple).
     observations_df : DataFrame, optional
         Source observations DataFrame used to compute `sigma_model_source`
         and `obs_epoch_start/end`.  Must have columns obsid, and optionally
@@ -756,13 +816,33 @@ def compute_bias_table(
     dim_cols = [_SOURCE_COL[d] for d in dims_available]
     logger.info("Residual dimensions available: %s", dims_available)
 
-    # Normalize program_code: if absent, create a null column so downstream
-    # logic has a uniform shape.
-    if "program_code" not in df.columns:
-        df["program_code"] = pd.NA
+    # -----------------------------------------------------------------
+    # Resolve the configured group keys → DataFrame columns (bead wl0).
+    # -----------------------------------------------------------------
+    group_by = list(group_by) if group_by is not None else list(DEFAULT_GROUP_BY)
+    unknown = [k for k in group_by if k not in _GROUP_KEY_TO_COL]
+    if unknown:
+        raise ValueError(
+            f"Unknown group_by key(s) {unknown}; valid keys are "
+            f"{list(_GROUP_KEY_TO_COL)}"
+        )
+    if "stn" not in group_by:
+        raise ValueError(
+            "group_by must include 'stn' — the per-station rollup is required."
+        )
+    key_cols = [_GROUP_KEY_TO_COL[k] for k in group_by]  # e.g. [stn, program_code, band]
+    extra_cols = key_cols[1:]  # everything beyond stn
+    logger.info("Group-by keys: %s → columns %s", group_by, key_cols)
+
+    # Ensure every configured key column exists; absent → all-NULL, so the key
+    # collapses out of the tuple and downstream shape stays uniform.
+    for col in key_cols:
+        if col not in df.columns:
+            df[col] = pd.NA
 
     # -----------------------------------------------------------------
-    # Pass 1: per-observatory rows
+    # Pass 1: per-station rollup rows (grouped on stn only). Always emitted;
+    # every non-stn key column is NULL on these rows.
     # -----------------------------------------------------------------
     per_obj_obs = _compute_per_object_means(df, ["stn"], dim_cols)
     rng_obs = np.random.default_rng(bootstrap.random_seed)
@@ -773,54 +853,73 @@ def compute_bias_table(
         bootstrap=bootstrap,
         rng=rng_obs,
     )
-    obs_rows["program_code"] = pd.NA
+    for col in extra_cols:
+        obs_rows[col] = pd.NA
 
     # -----------------------------------------------------------------
-    # Pass 2: per-(stn, program_code) rows, only for non-null program_code
+    # Pass 2: per-tuple rows at the full configured resolution, only for
+    # tuples with at least one non-NULL non-stn key (all-NULL tuples coincide
+    # with the rollup row and would duplicate it).
     # -----------------------------------------------------------------
-    prog_df = df[df["program_code"].notna()].copy()
-    if len(prog_df) > 0:
-        # Pre-filter (stn, program_code) groups that cannot pass the
-        # final min_obs_per_group / min_objects_per_group threshold.
-        # On MPC-scale input there are ~1.1M (stn, program_code) combos
-        # but only ~300 pass both filters; computing per-object stats and
-        # bootstrap CIs for the rest wastes ~15 minutes of wall time.
-        prog_sizes = (
-            prog_df.groupby(["stn", "program_code"], dropna=False, sort=False)
+    if extra_cols:
+        tuple_df = df[~_rollup_mask(df, extra_cols)].copy()
+    else:
+        tuple_df = df.iloc[0:0].copy()
+
+    if len(tuple_df) > 0:
+        # Pre-filter tuple groups that cannot pass the final min_obs_per_group /
+        # min_objects_per_group threshold. On MPC-scale input most of the ~1M
+        # tuples fail both filters; computing per-object stats and bootstrap CIs
+        # for them wastes substantial wall time.
+        #
+        # Membership filter on normalized key tuples — robust to NULL-only key
+        # columns (a merge on an all-NaN column trips a float64-vs-object dtype
+        # error and never matches NaN keys anyway).
+        tuple_sizes = (
+            tuple_df.groupby(key_cols, dropna=False, sort=False)
             .agg(_n_obj=("object_id", "nunique"), _n_obs=("object_id", "size"))
             .reset_index()
         )
-        keep = prog_sizes[
-            (prog_sizes["_n_obj"] >= min_objects_per_group)
-            & (prog_sizes["_n_obs"] >= min_obs_per_group)
-        ][["stn", "program_code"]]
-        before = len(prog_df)
-        prog_df = prog_df.merge(keep, on=["stn", "program_code"], how="inner")
+        keep = tuple_sizes[
+            (tuple_sizes["_n_obj"] >= min_objects_per_group)
+            & (tuple_sizes["_n_obs"] >= min_obs_per_group)
+        ]
+        kept_keys = {
+            tuple(_norm_key_value(rec[c]) for c in key_cols)
+            for rec in keep[key_cols].to_dict("records")
+        }
+        row_keys = [
+            tuple(_norm_key_value(v) for v in vals)
+            for vals in zip(*[tuple_df[c].tolist() for c in key_cols])
+        ]
+        before = len(tuple_df)
+        tuple_df = tuple_df[[k in kept_keys for k in row_keys]].copy()
         logger.info(
-            "Pre-filter (stn, program_code) groups: %d / %d kept, %d → %d rows",
-            len(keep), len(prog_sizes), before, len(prog_df),
+            "Pre-filter %s groups: %d / %d kept, %d → %d rows",
+            key_cols, len(kept_keys), len(tuple_sizes), before, len(tuple_df),
         )
-    if len(prog_df) > 0:
-        per_obj_prog = _compute_per_object_means(
-            prog_df, ["stn", "program_code"], dim_cols,
-        )
-        # Use an offset seed so program-code bootstrap noise is independent
-        # of the observatory-level bootstrap.
-        rng_prog = np.random.default_rng(bootstrap.random_seed + 1)
-        prog_rows = _aggregate_one_group_key(
-            per_obj_prog,
-            group_cols=["stn", "program_code"],
+    if len(tuple_df) > 0:
+        per_obj_tuple = _compute_per_object_means(tuple_df, key_cols, dim_cols)
+        # Offset seed so tuple-level bootstrap noise is independent of the
+        # station-level bootstrap.
+        rng_tuple = np.random.default_rng(bootstrap.random_seed + 1)
+        tuple_rows = _aggregate_one_group_key(
+            per_obj_tuple,
+            group_cols=key_cols,
             dims=dims_available,
             bootstrap=bootstrap,
-            rng=rng_prog,
+            rng=rng_tuple,
         )
     else:
-        prog_rows = pd.DataFrame(columns=["stn", "program_code"])
+        tuple_rows = pd.DataFrame(columns=key_cols)
 
     # -----------------------------------------------------------------
     # Combine + filter small groups + provenance + final schema
     # -----------------------------------------------------------------
-    table = pd.concat([obs_rows, prog_rows], ignore_index=True, sort=False)
+    table = pd.concat([obs_rows, tuple_rows], ignore_index=True, sort=False)
+    for col in key_cols:
+        if col not in table.columns:
+            table[col] = pd.NA
 
     # Drop small groups
     before = len(table)
@@ -833,24 +932,25 @@ def compute_bias_table(
         min_obs_per_group, min_objects_per_group, before, len(table),
     )
 
-    # Provenance join — need two passes (observatory-level and program-level)
+    # Provenance join — two levels (per-station rollup + full tuple)
     prov_obs = compute_provenance(df, observations_df, ["stn"])
-    prov_prog = (
-        compute_provenance(df[df["program_code"].notna()], observations_df,
-                           ["stn", "program_code"])
-        if len(prog_df) > 0
+    prov_tuple = (
+        compute_provenance(tuple_df, observations_df, key_cols)
+        if len(tuple_df) > 0
         else None
     )
 
-    for col in ("sigma_model_source", "obs_epoch_start", "obs_epoch_end"):
+    prov_value_cols = ("sigma_model_source", "obs_epoch_start", "obs_epoch_end")
+    for col in prov_value_cols:
         if col not in table.columns:
             table[col] = np.nan
 
     if prov_obs is not None:
-        _fill_provenance(table, prov_obs, ["stn"], program_code_null=True)
-    if prov_prog is not None:
-        _fill_provenance(table, prov_prog, ["stn", "program_code"],
-                         program_code_null=False)
+        _fill_group_columns(table, prov_obs, ["stn"], prov_value_cols,
+                            extra_cols=extra_cols, rollup=True)
+    if prov_tuple is not None:
+        _fill_group_columns(table, prov_tuple, key_cols, prov_value_cols,
+                            extra_cols=extra_cols, rollup=False)
 
     # -----------------------------------------------------------------
     # Per-station 2×2 residual covariance (RA/Dec, and AT/CT when present)
@@ -872,13 +972,13 @@ def compute_bias_table(
 
     cov_obs = compute_residual_covariance(df, ["stn"], dims_available)
     _fill_group_columns(table, cov_obs, ["stn"], cov_cols,
-                        program_code_null=True)
-    if len(prog_df) > 0:
-        cov_prog = compute_residual_covariance(
-            prog_df, ["stn", "program_code"], dims_available,
+                        extra_cols=extra_cols, rollup=True)
+    if len(tuple_df) > 0:
+        cov_tuple = compute_residual_covariance(
+            tuple_df, key_cols, dims_available,
         )
-        _fill_group_columns(table, cov_prog, ["stn", "program_code"], cov_cols,
-                            program_code_null=False)
+        _fill_group_columns(table, cov_tuple, key_cols, cov_cols,
+                            extra_cols=extra_cols, rollup=False)
 
     # Rename stn → obs_code for the final catalogue schema
     table = table.rename(columns={"stn": "obs_code"})
@@ -966,7 +1066,7 @@ def compute_bias_table(
 
     # Column ordering
     ordered = [
-        "obs_code", "program_code", "n_objects", "n_obs",
+        "obs_code", "program_code", "band", "astcat", "n_objects", "n_obs",
         "bias_ra_arcsec", "bias_ra_ci_low", "bias_ra_ci_high",
         "bias_dec_arcsec", "bias_dec_ci_low", "bias_dec_ci_high",
         "bias_at_arcsec", "bias_at_ci_low", "bias_at_ci_high",
@@ -998,49 +1098,15 @@ def compute_bias_table(
             table[col] = np.nan
     table = table[ordered]
 
-    # Sort: obs_code ascending, then program_code with nulls first (the
-    # observatory-level aggregate comes before its per-program rows).
-    table["_prog_sort"] = table["program_code"].isna().map({True: 0, False: 1})
+    # Sort: obs_code ascending, then the per-station rollup row first (all
+    # non-stn keys NULL), then per-tuple rows ordered by the extra keys.
+    table["_rollup_sort"] = _rollup_mask(table, extra_cols).map({True: 0, False: 1})
     table = table.sort_values(
-        ["obs_code", "_prog_sort", "program_code"],
+        ["obs_code", "_rollup_sort"] + list(extra_cols),
         na_position="first",
-    ).drop(columns=["_prog_sort"]).reset_index(drop=True)
+    ).drop(columns=["_rollup_sort"]).reset_index(drop=True)
 
     return table
-
-
-def _fill_provenance(
-    table: pd.DataFrame,
-    prov: pd.DataFrame,
-    key_cols: Iterable[str],
-    program_code_null: bool,
-) -> None:
-    """
-    In-place: copy provenance columns from `prov` into `table` for rows
-    whose keys match and whose program_code is/isn't null.
-    """
-    key_cols = list(key_cols)
-    prov_indexed = prov.set_index(key_cols)
-
-    if program_code_null:
-        mask = table["program_code"].isna()
-    else:
-        mask = table["program_code"].notna()
-
-    for i in table.index[mask]:
-        key = tuple(table.loc[i, k] for k in key_cols)
-        if len(key) == 1:
-            key = key[0]
-        if key in prov_indexed.index:
-            src = prov_indexed.loc[key]
-            for col in ("sigma_model_source", "obs_epoch_start", "obs_epoch_end"):
-                if col in prov.columns:
-                    val = src[col]
-                    # `src` may itself be a DataFrame if non-unique keys —
-                    # in that case take the first row.
-                    if isinstance(val, pd.Series):
-                        val = val.iloc[0]
-                    table.at[i, col] = val
 
 
 def _fill_group_columns(
@@ -1048,32 +1114,41 @@ def _fill_group_columns(
     src: pd.DataFrame,
     key_cols: Iterable[str],
     value_cols: Iterable[str],
-    program_code_null: bool,
+    *,
+    extra_cols: Iterable[str],
+    rollup: bool,
 ) -> None:
     """
-    In-place: copy ``value_cols`` from ``src`` into ``table`` for rows whose
-    keys match and whose program_code is/isn't null.
+    In-place: copy ``value_cols`` from ``src`` into ``table`` for rows at one
+    grouping level (bead wl0). Used to graft provenance and residual-covariance
+    columns onto the assembled table.
 
-    A generic version of :func:`_fill_provenance` used to graft the residual
-    covariance columns onto the assembled table.  Only columns present in
-    ``src`` are copied (so AT/CT covariance is skipped when absent).
+    ``rollup=True`` targets the per-station rollup rows (every non-``stn`` key
+    NULL), matched on ``key_cols=["stn"]``. ``rollup=False`` targets the
+    per-tuple rows, matched on the full ``key_cols``. NULL key values are
+    normalized to a sentinel before matching, because pandas treats NaN != NaN
+    on ``.loc`` lookups and a raw NaN key would never match.
+
+    Only columns present in ``src`` are copied (so AT/CT covariance is skipped
+    when absent).
     """
     key_cols = list(key_cols)
+    extra_cols = list(extra_cols)
     if src is None or len(src) == 0:
         return
     present = [c for c in value_cols if c in src.columns]
     if not present:
         return
+    src = src.copy()
+    for c in key_cols:
+        src[c] = src[c].map(_norm_key_value)
     src_indexed = src.set_index(key_cols)
 
-    mask = (
-        table["program_code"].isna()
-        if program_code_null
-        else table["program_code"].notna()
-    )
+    rmask = _rollup_mask(table, extra_cols)
+    mask = rmask if rollup else ~rmask
 
     for i in table.index[mask]:
-        key = tuple(table.loc[i, k] for k in key_cols)
+        key = tuple(_norm_key_value(table.loc[i, k]) for k in key_cols)
         if len(key) == 1:
             key = key[0]
         if key in src_indexed.index:
@@ -1087,7 +1162,7 @@ def _fill_group_columns(
 
 def _empty_bias_table() -> pd.DataFrame:
     cols = [
-        "obs_code", "program_code", "n_objects", "n_obs",
+        "obs_code", "program_code", "band", "astcat", "n_objects", "n_obs",
         "bias_ra_arcsec", "bias_ra_ci_low", "bias_ra_ci_high",
         "bias_dec_arcsec", "bias_dec_ci_low", "bias_dec_ci_high",
         "bias_at_arcsec", "bias_at_ci_low", "bias_at_ci_high",
@@ -1154,7 +1229,13 @@ def validate_against_anchors(
     Returns a DataFrame with one row per anchor, indicating pass/fail for
     bias magnitude and CI behaviour.
     """
-    obs_only = bias_table[bias_table["program_code"].isna()].set_index("obs_code")
+    # Per-station rollup rows are those with every non-stn key NULL — select on
+    # whichever of {program_code, band, astcat} are present (bead wl0).
+    rollup_mask = pd.Series(True, index=bias_table.index)
+    for col in ("program_code", "band", "astcat"):
+        if col in bias_table.columns:
+            rollup_mask &= bias_table[col].isna()
+    obs_only = bias_table[rollup_mask].set_index("obs_code")
 
     rows = []
     for anchor in anchors:

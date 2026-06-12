@@ -55,6 +55,41 @@ from .eligibility import (
 
 logger = logging.getLogger(__name__)
 
+#: Group-key dimensions that may be configured as the LOOO hold-out unit and the
+#: bias_table aggregation key (bead wl0). Each maps a short CLI/profile name to
+#: the per-observation attribute used to build the hold-out tuple.
+GROUP_KEY_DIMENSIONS = ("stn", "prog", "band", "astcat")
+
+#: Default v2 ("v2_full") group keys: per-(station, program, band) hold-out.
+#: astcat is off by default — see docs/v2-scope.md "astcat — decision".
+DEFAULT_GROUP_BY = ("stn", "prog", "band")
+
+
+def _validate_group_by(group_by: List[str]) -> List[str]:
+    """Validate and normalize a list of group-key names.
+
+    Raises ValueError on unknown keys or an empty list. ``stn`` is not strictly
+    required, but the v2 design always includes it (the per-station rollup
+    depends on it); we warn rather than reject if it is absent.
+    """
+    if not group_by:
+        raise ValueError("group_by must contain at least one key")
+    unknown = [k for k in group_by if k not in GROUP_KEY_DIMENSIONS]
+    if unknown:
+        raise ValueError(
+            f"Unknown group_by key(s) {unknown}; "
+            f"valid keys are {list(GROUP_KEY_DIMENSIONS)}"
+        )
+    if len(set(group_by)) != len(group_by):
+        raise ValueError(f"group_by contains duplicate keys: {group_by}")
+    if "stn" not in group_by:
+        logger.warning(
+            "group_by=%s does not include 'stn'; per-station rollup rows in "
+            "the bias table will not be anchored to a station code.",
+            group_by,
+        )
+    return list(group_by)
+
 
 @dataclass
 class LOOOConfig:
@@ -135,6 +170,9 @@ class LOOOResult(qv.Table):
     # --- MPC program code for this observation (from `prog` field) ---
     program_code = qv.LargeStringColumn(nullable=True)
 
+    # --- Photometric band / filter for this observation (from `band` field) ---
+    band = qv.LargeStringColumn(nullable=True)
+
     # --- Hold-out set context (for bias control / stratification) ---
     #: Number of observations held out from this object for this observatory
     n_obs_held_out = qv.Int64Column()
@@ -194,6 +232,8 @@ def run_looo_for_object(
     config: Optional[LOOOConfig] = None,
     astcats: Optional[List[Optional[str]]] = None,
     program_codes: Optional[List[Optional[str]]] = None,
+    bands: Optional[List[Optional[str]]] = None,
+    group_by: Optional[List[str]] = None,
     holdout_column: Optional[np.ndarray] = None,
     exclusion_stats: Optional[ExclusionStats] = None,
     orbit_fitter: Optional[OrbitFitter] = None,
@@ -224,9 +264,19 @@ def run_looo_for_object(
     program_codes : list of str or None, optional
         MPC program codes (from the `prog` field) parallel to observations.id.
         If provided, stored per-row in the output for per-program-code analysis.
+    bands : list of str or None, optional
+        Photometric band / filter codes (from the `band` field) parallel to
+        observations.id. Stored per-row in the output for per-band analysis.
+    group_by : list of str, optional
+        Subset of {stn, prog, band, astcat} defining the LOOO hold-out unit
+        (bead wl0). Each unique tuple of these per-observation values for the
+        object is held out together. Defaults to ``DEFAULT_GROUP_BY``
+        (``[stn, prog, band]``). Ignored when ``holdout_column`` is supplied
+        (the legacy single-column path).
     holdout_column : np.ndarray, optional
-        Array of holdout key values parallel to observations (e.g. program codes).
-        Defaults to observatory codes (observations.coordinates.origin.code).
+        Legacy single-column override. Array of holdout key values parallel to
+        observations (e.g. program codes). When provided it takes precedence
+        over ``group_by``. Defaults to None (use ``group_by``).
     exclusion_stats : ExclusionStats, optional
         If provided, records exclusion statistics for each pair checked.
     orbit_fitter : OrbitFitter, optional
@@ -259,28 +309,51 @@ def run_looo_for_object(
     all_obs_ids = observations.id.to_numpy(zero_copy_only=False)
     all_mjds = observations.coordinates.time.mjd().to_numpy(zero_copy_only=False)
 
-    # Determine holdout keys — default to observatory codes
+    # Per-observation source arrays for each configurable group-key dimension.
+    def _as_list(vals: Optional[List]) -> List:
+        return list(vals) if vals is not None else [None] * n_obs_total
+
+    key_source = {
+        "stn": list(all_stns),
+        "prog": _as_list(program_codes),
+        "band": _as_list(bands),
+        "astcat": _as_list(astcats),
+    }
+
+    # Determine the per-observation hold-out tuples.
+    #   - Legacy path: an explicit ``holdout_column`` overrides ``group_by``.
+    #   - Default path (bead wl0): the tuple of the configured group-key values.
     if holdout_column is not None:
-        holdout_keys = holdout_column
+        obs_tuples = [(v,) for v in holdout_column]
+        active_group_by: List[str] = []
     else:
-        holdout_keys = all_stns
-    unique_keys = np.unique(holdout_keys)
+        active_group_by = _validate_group_by(
+            list(group_by) if group_by is not None else list(DEFAULT_GROUP_BY)
+        )
+        obs_tuples = list(zip(*[key_source[k] for k in active_group_by]))
+
+    # Deterministic ordering, None-safe (None sorts as empty string).
+    unique_tuples = sorted(
+        set(obs_tuples),
+        key=lambda t: tuple("" if v is None else str(v) for v in t),
+    )
 
     results: List[LOOOResult] = []
 
-    for key in unique_keys:
-        held_out_mask = holdout_keys == key
+    for tup in unique_tuples:
+        key_label = str(tup[0]) if len(tup) == 1 else str(tup)
+        held_out_mask = np.array([t == tup for t in obs_tuples], dtype=bool)
         hold_in_mask = ~held_out_mask
 
         # --- Eligibility checks via eligibility module ---
         eligibility = check_pair_eligibility(
             observations, held_out_mask, config,
-            object_id=object_id, holdout_key=str(key),
+            object_id=object_id, holdout_key=key_label,
         )
         if exclusion_stats is not None:
             exclusion_stats.record(eligibility)
         if not eligibility.eligible:
-            logger.debug(f"{object_id} / {key}: {eligibility.reason}, skipping")
+            logger.debug(f"{object_id} / {key_label}: {eligibility.reason}, skipping")
             continue
 
         n_held_out = eligibility.stats["n_held_out"]
@@ -290,10 +363,13 @@ def run_looo_for_object(
 
         hold_in_obs = observations.apply_mask(pa.array(hold_in_mask))
 
-        # Resolve the station code for the result — when holding out by
-        # observatory the key IS the station; when holding out by program
-        # code we still record the actual station per observation below.
-        stn_for_key = str(key) if holdout_column is None else None
+        # Resolve the station code for the result — when ``stn`` is part of the
+        # hold-out tuple the station is fixed for the whole group; otherwise we
+        # record the actual per-observation station below.
+        if "stn" in active_group_by:
+            stn_for_key = str(tup[active_group_by.index("stn")])
+        else:
+            stn_for_key = None
 
         # --- Hold-in fit: pluggable orbit fitter or scipy DC ---
         try:
@@ -311,11 +387,11 @@ def run_looo_for_object(
                     **config.ls_kwargs,
                 )
         except Exception as e:
-            logger.warning(f"{object_id} / {key}: hold-in fit failed: {e}")
+            logger.warning(f"{object_id} / {key_label}: hold-in fit failed: {e}")
             continue
 
         if len(hold_in_orbit) == 0:
-            logger.debug(f"{object_id} / {key}: DC returned no orbit, skipping")
+            logger.debug(f"{object_id} / {key_label}: DC returned no orbit, skipping")
             continue
 
         # --- Predict at held-out observation times ---
@@ -328,7 +404,7 @@ def run_looo_for_object(
                 parameters=6,
             )
         except Exception as e:
-            logger.warning(f"{object_id} / {key}: evaluate_orbits failed: {e}")
+            logger.warning(f"{object_id} / {key_label}: evaluate_orbits failed: {e}")
             continue
 
         # --- Collect residuals ---
@@ -362,6 +438,12 @@ def run_looo_for_object(
         else:
             held_out_programs = [None] * n_held_out
 
+        # --- band values for held-out obs (if provided) ---
+        if bands is not None:
+            held_out_bands = [bands[i] for i, m in enumerate(held_out_mask) if m]
+        else:
+            held_out_bands = [None] * n_held_out
+
         # --- Station codes: per-obs actual station when holding out by non-stn key ---
         if stn_for_key is not None:
             stn_values = np.full(n_held_out, stn_for_key, dtype=object)
@@ -381,6 +463,7 @@ def run_looo_for_object(
             chi2=np.where(np.isfinite(chi2_vals), chi2_vals, None),
             astcat=pa.array(held_out_astcats, type=pa.large_utf8()),
             program_code=pa.array(held_out_programs, type=pa.large_utf8()),
+            band=pa.array(held_out_bands, type=pa.large_utf8()),
             n_obs_held_out=np.full(n_held_out, n_held_out, dtype=np.int64),
             n_obs_remaining=np.full(n_held_out, n_remaining, dtype=np.int64),
             arc_length_remaining_days=np.full(n_held_out, arc_remaining),
@@ -402,7 +485,7 @@ def run_looo_for_object(
         )
         results.append(result)
         logger.info(
-            f"{object_id} / {key}: {n_held_out} held-out obs, "
+            f"{object_id} / {key_label}: {n_held_out} held-out obs, "
             f"chi2/obs={float(np.nanmean(chi2_vals)):.2f}"
         )
 

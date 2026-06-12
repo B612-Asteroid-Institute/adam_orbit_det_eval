@@ -148,10 +148,20 @@ def parse_args():
         default=50,
         help="Write results to disk every N objects (default: 50)",
     )
+    p.add_argument(
+        "--group-by",
+        type=str,
+        default="stn,prog,band",
+        help=(
+            "Comma-separated LOOO hold-out / aggregation keys "
+            "(subset of stn,prog,band,astcat; default: stn,prog,band). "
+            "Each unique tuple is held out as a unit per object (bead wl0)."
+        ),
+    )
     return p.parse_args()
 
 
-def get_orbit_fitter(name: str, fo_result_dir: str, strict: bool = True):
+def get_orbit_fitter(name: str, fo_result_dir: str, strict: bool = True, propagator=None):
     """Build an OrbitFitter instance (or None for scipy DC fallback).
 
     Parameters
@@ -164,13 +174,19 @@ def get_orbit_fitter(name: str, fo_result_dir: str, strict: bool = True):
         If True (default), abort with sys.exit(1) when the requested fitter
         is not importable. If False, fall back to scipy DC with a critical
         log message.
+    propagator : Propagator, optional
+        Propagator the fitter uses to evaluate hold-in chi2. Must be the same
+        propagator used for the LOOO held-out evaluation; if omitted,
+        FindOrbOrbitFitter falls back to 2-body, which inflates
+        hold_in_reduced_chi2 by ~7 orders of magnitude on long arcs
+        (smoke pilot v13, 2026-06-10).
     """
     if name == "scipy":
         return None
     if name == "findorb":
         try:
             from adam_fo.find_orb_orbit_fitter import FindOrbOrbitFitter
-            return FindOrbOrbitFitter(fo_result_dir=fo_result_dir)
+            return FindOrbOrbitFitter(fo_result_dir=fo_result_dir, propagator=propagator)
         except ImportError as e:
             msg = (
                 f"FindOrbOrbitFitter unavailable ({e}). "
@@ -256,7 +272,10 @@ def main():
 
     # --- Configure LOOO ---
     from adam_orbit_det_eval.looo import run_looo_pipeline
-    from adam_orbit_det_eval.looo.core import LOOOConfig
+    from adam_orbit_det_eval.looo.core import LOOOConfig, _validate_group_by
+
+    group_by = _validate_group_by([k.strip() for k in args.group_by.split(",") if k.strip()])
+    logger.info(f"LOOO group-by keys: {group_by}")
 
     config = LOOOConfig(
         min_obs_held_out=args.min_obs_held_out,
@@ -270,7 +289,12 @@ def main():
 
     # --- Configure orbit fitter ---
     fo_result_dir = args.fo_result_dir or str(output_dir / "findorb_work")
-    orbit_fitter = get_orbit_fitter(args.orbit_fitter, fo_result_dir, strict=args.strict_fitter)
+    orbit_fitter = get_orbit_fitter(
+        args.orbit_fitter,
+        fo_result_dir,
+        strict=args.strict_fitter,
+        propagator=propagator_class(),
+    )
     fitter_name = type(orbit_fitter).__name__ if orbit_fitter is not None else "scipy_fit_least_squares"
     logger.info(f"Using orbit fitter: {fitter_name}")
 
@@ -286,6 +310,7 @@ def main():
         "min_arc_length_days": args.min_arc_length,
         "min_obs_held_out": args.min_obs_held_out,
         "max_held_out_fraction": args.max_held_out_fraction,
+        "group_by": group_by,
         "max_processes": args.max_processes,
         "input_obs": str(obs_path),
         "input_orbits": str(orbits_path),
@@ -311,6 +336,7 @@ def main():
         write_interval=args.write_interval,
         sigma_model=args.sigma_model,
         orbit_fitter=orbit_fitter,
+        group_by=group_by,
     )
 
     logger.info(

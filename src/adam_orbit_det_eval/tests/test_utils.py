@@ -24,18 +24,25 @@ def test_mpc_to_od_observations() -> None:
     assert len(mpc_valid_var) < len(mpc)
     assert len(mpc_valid_var) > 100
 
-    # Keep NaNs, use actual RMS where available
-    od_nans = mpc_to_od_observations(mpc, prevent_nans=False)
+    # Keep NaNs, use actual RMS where available. sigma_model="const" exercises
+    # the NaN-passthrough path this test verifies; the default "veres2017" model
+    # now fills every missing sigma from the per-(stn, catalog) lookup, so it
+    # never leaves NaNs and the validity correspondence below would not hold.
+    od_nans = mpc_to_od_observations(mpc, prevent_nans=False, sigma_model="const")
     assert len(od_nans) == len(mpc)
     # Only looking at ra and dec sigmas for nans, they should be for the same records as MPC
     od_valid_var_mask = pc.invert(
         np.any(np.isnan(od_nans.coordinates.covariance.sigmas[:, 1:3]), axis=1)
     )
     od_valid_var = od_nans.apply_mask(od_valid_var_mask)
-    assert od_valid_var_mask == mpc_valid_var_mask
+    # Both are pyarrow BooleanArrays; `==` yields an element-wise array (whose
+    # truth value is ambiguous), so compare element-wise and require all-equal.
+    assert pc.all(pc.equal(od_valid_var_mask, mpc_valid_var_mask)).as_py()
 
     # Now with NaN suppression
-    od_no_nans = mpc_to_od_observations(mpc, prevent_nans=True, diag_nan=36.0)
+    od_no_nans = mpc_to_od_observations(
+        mpc, prevent_nans=True, diag_nan=36.0, sigma_model="const"
+    )
     nans_mask = np.any(
         np.isnan(od_no_nans.coordinates.covariance.sigmas[:, 1:3]), axis=1
     )

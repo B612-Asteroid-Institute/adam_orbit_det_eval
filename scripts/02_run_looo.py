@@ -151,11 +151,45 @@ def parse_args():
     p.add_argument(
         "--group-by",
         type=str,
-        default="stn,prog,band",
+        default=None,
         help=(
             "Comma-separated LOOO hold-out / aggregation keys "
             "(subset of stn,prog,band,astcat; default: stn,prog,band). "
-            "Each unique tuple is held out as a unit per object (bead wl0)."
+            "Each unique tuple is held out as a unit per object (bead wl0). "
+            "Overrides the --profile value when both are given."
+        ),
+    )
+    p.add_argument(
+        "--profile",
+        type=str,
+        default=None,
+        help=(
+            "Named run profile (e.g. v2_full, v2_full_pre_2017, "
+            "v2_full_post_2017) setting group-by + obstime window + output-dir "
+            "suffix together (bead tcu). Explicit --group-by/--obstime-min/"
+            "--obstime-max flags override the profile's individual values."
+        ),
+    )
+    p.add_argument(
+        "--obstime-min",
+        type=str,
+        default=None,
+        help=(
+            "ISO date (UTC), e.g. 2017-01-01. Keep only observations with "
+            "obstime strictly after this bound, applied BEFORE the LOOO "
+            "refits (bead tcu). Overrides the --profile value when both are "
+            "given."
+        ),
+    )
+    p.add_argument(
+        "--obstime-max",
+        type=str,
+        default=None,
+        help=(
+            "ISO date (UTC), e.g. 2017-01-01. Keep only observations with "
+            "obstime at or before this bound, applied BEFORE the LOOO "
+            "refits (bead tcu). Overrides the --profile value when both are "
+            "given."
         ),
     )
     return p.parse_args()
@@ -238,7 +272,36 @@ def get_propagator_class(name: str):
 
 def main():
     args = parse_args()
-    run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+    # --- Resolve run profile + per-option overrides (bead tcu) ---
+    from adam_orbit_det_eval.looo.profiles import resolve_run_options
+
+    explicit_group_by = (
+        [k.strip() for k in args.group_by.split(",") if k.strip()]
+        if args.group_by is not None
+        else None
+    )
+    options = resolve_run_options(
+        profile=args.profile,
+        group_by=explicit_group_by,
+        obstime_min=args.obstime_min,
+        obstime_max=args.obstime_max,
+    )
+    logger.info(
+        f"Run profile: {options.profile or '(ad-hoc)'} — "
+        f"group_by={list(options.group_by)}, "
+        f"obstime window=({options.obstime_min or '-inf'}, "
+        f"{options.obstime_max or '+inf'}]"
+    )
+
+    # The profile's output-dir suffix is appended to the default timestamped
+    # run id (e.g. 20260612T010203Z_v2_full_pre_2017), matching the
+    # data/mpc_scale_results_<date>_<profile>/ convention from v2-scope.md.
+    # An explicit --run-id is used verbatim.
+    run_id = args.run_id or (
+        datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        + options.output_dir_suffix
+    )
     output_dir = args.output_dir / run_id
     output_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Run ID: {run_id}  →  {output_dir}")
@@ -272,9 +335,9 @@ def main():
 
     # --- Configure LOOO ---
     from adam_orbit_det_eval.looo import run_looo_pipeline
-    from adam_orbit_det_eval.looo.core import LOOOConfig, _validate_group_by
+    from adam_orbit_det_eval.looo.core import LOOOConfig
 
-    group_by = _validate_group_by([k.strip() for k in args.group_by.split(",") if k.strip()])
+    group_by = list(options.group_by)
     logger.info(f"LOOO group-by keys: {group_by}")
 
     config = LOOOConfig(
@@ -310,7 +373,13 @@ def main():
         "min_arc_length_days": args.min_arc_length,
         "min_obs_held_out": args.min_obs_held_out,
         "max_held_out_fraction": args.max_held_out_fraction,
+        # Resolved run profile (bead tcu): the effective values after
+        # explicit-flag > profile > default precedence, for reproducibility.
+        "profile": options.profile,
+        "output_dir_suffix": options.output_dir_suffix,
         "group_by": group_by,
+        "obstime_min": options.obstime_min,
+        "obstime_max": options.obstime_max,
         "max_processes": args.max_processes,
         "input_obs": str(obs_path),
         "input_orbits": str(orbits_path),
@@ -337,6 +406,8 @@ def main():
         sigma_model=args.sigma_model,
         orbit_fitter=orbit_fitter,
         group_by=group_by,
+        obstime_min=options.obstime_min,
+        obstime_max=options.obstime_max,
     )
 
     logger.info(

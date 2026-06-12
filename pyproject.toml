@@ -18,12 +18,14 @@ license = { file = "LICENSE.md" }
 keywords = ["astronomy", "orbital mechanics", "orbit determination"]
 
 dependencies = [
-  # Tier-2 pins for pilot v12 (bead dez): both branches pushed but NOT merged
-  # to main — pending team review (adam_core review tracked as bead 7hl). The
-  # warm-start fix in adam_fo (bead 9sg) needs the matching ABC change in
-  # adam_core (bead e48), so they must be pinned together.
-  "adam_core @ git+https://github.com/B612-Asteroid-Institute/adam_core.git@21f49964",
-  "adam_fo @ git+https://github.com/B612-Asteroid-Institute/adam_fo.git@abf4c97",
+  # Tier-2 pins for the v2 run (2026-06-12):
+  # - adam_core e6f89108 = main after PR #198 merge (e48 warm-start ABC).
+  # - adam_fo 6329e32 = kk/v2-prep-fitter-resilience tip (beads 5h7 + 589),
+  #   pushed but NOT merged — PR review expected 2026-06-15+. Branch-SHA
+  #   pinning pending Tier-2 review follows the e48/9sg precedent (2026-05-05).
+  #   589 prevents shard-level row loss; both fixes are failure-path-only.
+  "adam_core @ git+https://github.com/B612-Asteroid-Institute/adam_core.git@e6f89108",
+  "adam_fo @ git+https://github.com/B612-Asteroid-Institute/adam_fo.git@6329e32",
   "adam_assist",
   "numpy>=2.0.0",
   "pyarrow>=13.0.0",

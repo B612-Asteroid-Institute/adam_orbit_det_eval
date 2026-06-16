@@ -30,20 +30,27 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends git wget zlib1g-dev libncurses-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# --- Build Find_Orb from source ---
-# Pinned commits match adam_fo/src/adam_fo/build_fo.sh for reproducibility.
-# Patch: add missing get_satellite_offset declaration to mpc_obs.h (bead mxw).
+# --- Build Find_Orb from source (pinned for reproducibility) ---
+# Find_Orb dependency SHAs pinned 2026-06-16 after lunar PREFIX drift broke a
+# floating-HEAD build. Refresh by re-pinning to fresh HEADs after verifying a
+# clean build.
+#
+# Why PREFIX: lunar HEAD changed its makefile default to `PREFIX ?= ..` (installs
+# headers to ../include) while jpl_eph still compiles with `-I ~/include`; with
+# floating HEAD the two diverged and get_bin.h landed where jpl_eph couldn't see
+# it. Exporting PREFIX=$HOME forces every Bill-Gray makefile to a single prefix
+# (/root/{include,lib,bin}), restoring the layout the green pilots (v10–v12) used.
+# These pinned find_orb sources already carry the bead-mxw get_satellite_offset
+# fix upstream, so no header patch is needed (verified: clean `make fo` under
+# the base image's GCC 14, all the way through mpc_obs.cpp / ades_out.cpp).
 ENV FO_BUILD_DIR=/root/.local/share/adam_fo
-RUN set -ex && mkdir -p $FO_BUILD_DIR && cd $FO_BUILD_DIR && mkdir -p find_orb && cd find_orb \
-    # Clone repos at HEAD — pinned commits in build_fo.sh are mutually
-    # incompatible (find_orb references sat_code symbols not in the pinned
-    # sat_code, e.g. N_SATELL_COORD_ERRORS, get_satellite_offset). HEAD
-    # commits are developed in tandem and compile together.
-    && git clone --depth 1 https://github.com/Bill-Gray/lunar.git \
-    && git clone --depth 1 https://github.com/Bill-Gray/jpl_eph.git \
-    && git clone --depth 1 https://github.com/Bill-Gray/sat_code.git \
-    && git clone --depth 1 https://github.com/Bill-Gray/find_orb.git \
-    && git clone --depth 1 https://github.com/Bill-Gray/miscell.git \
+RUN set -ex && export PREFIX="$HOME" \
+    && mkdir -p $FO_BUILD_DIR && cd $FO_BUILD_DIR && mkdir -p find_orb && cd find_orb \
+    && git clone https://github.com/Bill-Gray/lunar.git    && git -C lunar    checkout 7ee6739196dcfdc1e7924a864c5103bfa408b6ca \
+    && git clone https://github.com/Bill-Gray/jpl_eph.git   && git -C jpl_eph   checkout 0c2782e86e42df69a55c2b2db0b72a40312c79c0 \
+    && git clone https://github.com/Bill-Gray/sat_code.git  && git -C sat_code  checkout ff7b98957dfa2979700a482bde9de9542807293e \
+    && git clone https://github.com/Bill-Gray/find_orb.git  && git -C find_orb  checkout b36535b2558ff0cab9774c0925cecca97a43bb95 \
+    && git clone https://github.com/Bill-Gray/miscell.git   && git -C miscell   checkout 9ba48b37f26b3ec762aa47c2fc941ef74c1323aa \
     # Build in dependency order
     && cd lunar   && make liblunar.a && make install && cd .. \
     && cd jpl_eph && make libjpl.a   && make install && cd .. \
@@ -56,9 +63,19 @@ RUN set -ex && mkdir -p $FO_BUILD_DIR && cd $FO_BUILD_DIR && mkdir -p find_orb &
     && wget -q https://ssd.jpl.nasa.gov/ftp/eph/planets/Linux/de440t/linux_p1550p2650.440t \
     && wget -qO bc405.dat https://storage.googleapis.com/asteroid-institute-data/ephemeris/bc405.dat
 
+# --- Stage Find_Orb's config files into the config dir ---
+# The pinned find_orb (b36535b) hard-asserts in default_config_dir_name()
+# (miscell.cpp:212, test_ifile) that ~/.find_orb — the symlink target below —
+# holds a valid config file (cospar.txt). With only the ephemerides present
+# (the wget above), `fo` aborts with SIGABRT (rc 134) on every object, which the
+# build-time smoke catches. `make install` (PREFIX=$HOME) staged the config set
+# under $HOME/share/findorb/data; copy it alongside the ephemerides. Kept as a
+# separate RUN so the Find_Orb compile layer above stays cache-valid.
+RUN cp -a /root/share/findorb/data/. /root/.local/share/adam_fo/find_orb/.find_orb/
+
 # --- Symlink config dir so fo's default_config_dir_name() finds cospar.txt ---
-# fo probes ~/.find_orb/cospar.txt at startup; adam_fo stores files under
-# $FO_BUILD_DIR/find_orb/.find_orb/ (XDG_DATA_HOME layout).
+# fo probes ~/.find_orb/cospar.txt at startup; the RUNs above stage both the
+# ephemerides and the find_orb config files under $FO_BUILD_DIR/find_orb/.find_orb/.
 RUN ln -s /root/.local/share/adam_fo/find_orb/.find_orb /root/.find_orb
 
 # --- Overlay workspace adam_core (fixes refine_fit ABC mismatch) ---

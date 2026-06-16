@@ -104,8 +104,56 @@ def main() -> None:
     # both residuals and chi2 are sane.
     chi2 = results.hold_in_reduced_chi2.to_numpy(zero_copy_only=False)
     ra_arcsec = results.residual_ra_arcsec.to_numpy(zero_copy_only=False)
+    dec_arcsec = results.residual_dec_arcsec.to_numpy(zero_copy_only=False)
     success = results.hold_in_fit_success.to_pylist()
     success_valid = pc.is_valid(results.hold_in_fit_success).to_pylist()
+
+    # -- Global column-population gates (54t v2-full smoke spec) --
+    # The null check above already guarantees hold_in_reduced_chi2 is fully
+    # populated; these add the value-distribution and companion-column gates
+    # the v2 brief requires, so a build that regresses to the pilot-v10 NaN
+    # regime OR the 2tj chi2-inflation regime (median ~10^7) fails at build.
+    global_failures: list[str] = []
+
+    finite_chi2 = chi2[np.isfinite(chi2)]
+    median_chi2 = float(np.median(finite_chi2)) if len(finite_chi2) else float("nan")
+    print(
+        f"Global: hold_in_reduced_chi2 median={median_chi2:.4g} "
+        f"over {len(finite_chi2)}/{len(chi2)} finite rows"
+    )
+    if not (0.01 <= median_chi2 <= 100.0):
+        global_failures.append(
+            f"global hold_in_reduced_chi2 median={median_chi2} outside [0.01, 100] "
+            f"(chi2-inflation regression on bead 2tj or all-NaN regression)"
+        )
+
+    success_nonnull_frac = (
+        sum(1 for v in success_valid if v) / len(success_valid)
+        if success_valid
+        else 0.0
+    )
+    print(f"Global: hold_in_fit_success non-null on {success_nonnull_frac:.0%} of rows")
+    if success_nonnull_frac <= 0.5:
+        global_failures.append(
+            f"hold_in_fit_success non-null on only {success_nonnull_frac:.0%} of rows "
+            f"(<=50%; fit-success column not flowing through)"
+        )
+
+    finite_resid = int(
+        np.sum(np.isfinite(ra_arcsec) & np.isfinite(dec_arcsec))
+    )
+    print(f"Global: {finite_resid}/{len(ra_arcsec)} rows have finite RA+Dec residuals")
+    if finite_resid < 1:
+        global_failures.append(
+            "no row has a finite (non-NaN) RA/Dec residual (residual computation "
+            "produced all-NaN — propagation or observer-state regression)"
+        )
+
+    if global_failures:
+        print("FAIL: global column-population gate(s) tripped:")
+        for f in global_failures:
+            print(f"  - {f}")
+        sys.exit(1)
 
     failures: list[str] = []
     for witness in WITNESS_OBJECT_IDS:

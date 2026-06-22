@@ -1,7 +1,7 @@
 {
   "name": "mpc-real-data-looo",
   "namespace": "research-kat",
-  "queue": "cpu-ondemand",
+  "queue": "cpu-spot",
   "mode": "indexed",
   "image": "us-west1-docker.pkg.dev/moeyens-thor-dev/ai/mpc-real-data-looo:v2-full-20260616",
   "resources": {

@@ -1,7 +1,7 @@
 {
   "name": "mpc-real-data-looo",
   "namespace": "research-kat",
-  "queue": "cpu-spot",
+  "queue": "cpu-ondemand",
   "mode": "indexed",
   "image": "us-west1-docker.pkg.dev/moeyens-thor-dev/ai/mpc-real-data-looo:v2-full-20260622",
   "resources": {
@@ -11,7 +11,7 @@
   },
   "job": {
     "completions": 19,
-    "parallelism": 14,
+    "parallelism": 3,
     "ttl_seconds_after_finished": 172800
   },
   "retry": {

@@ -1,5 +1,6 @@
 {
-  "catalog_name": "v2_full",
+  "catalog_name": "v2_full_no_prog",
+  "catalog_name_caveat": "Despite the v2_full design specifying group_by=[stn, prog, band], this catalog ran on the v12 BQ fetch (2026-05-08), which predates bead 43z and therefore lacks the prog column. All per-tuple rows have program_code=NULL. Sibling catalog with prog populated is tracked separately; see siblings_to_run_later.v2_full_with_prog and the no-prog rerun bead.",
   "catalog_date": "2026-06-23",
   "bead": "54t",
   "run_profile": "v2_full",

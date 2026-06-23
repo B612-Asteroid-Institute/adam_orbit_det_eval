@@ -1,0 +1,68 @@
+{
+  "catalog_name": "v2_full",
+  "catalog_date": "2026-06-23",
+  "bead": "54t",
+  "run_profile": "v2_full",
+  "group_by": ["stn", "prog", "band"],
+  "obstime_window": {"min": null, "max": null, "comment": "no time filter; full archive"},
+  "preprocessing": {
+    "efcc18_applied": true,
+    "efcc18_bias_dat_source": "data/efcc18/bias.parquet (regenerated from debias_2018.tgz)",
+    "coverage_corrected_pct": 46.30,
+    "coverage_reference_frame_pct": 50.54,
+    "coverage_unsupported_pct": 3.17
+  },
+  "cloud_run": {
+    "job_uid": "mpc-real-data-looo-20260623055636",
+    "image": "us-west1-docker.pkg.dev/moeyens-thor-dev/ai/mpc-real-data-looo:v2-full-20260622",
+    "namespace": "research-kat",
+    "queue": "cpu-spot",
+    "completions": 19,
+    "parallelism": 14,
+    "duration": "6h39m",
+    "pod_failures_absorbed": 59,
+    "failed_indices": 0
+  },
+  "gcs": {
+    "input_prefix": "gs://exp-research/mpc-real-data-looo-v2-full-20260622/input/",
+    "output_prefix": "gs://exp-research/mpc-real-data-looo-v2-full-20260622/output/",
+    "looo_results_atct_parquet": "gs://exp-research/mpc-real-data-looo-v2-full-20260622/output/<merged>/looo_results_atct.parquet (also produced locally; 428 MB, not in git)"
+  },
+  "code_pins": {
+    "adam_orbit_det_eval_branch": "kk/v2-prep-runbook",
+    "adam_core_pin": "e6f89108 (post PR #198 merge; bead e48 warm-start ABC)",
+    "adam_fo_pin": "b10b622 (kk/v2-prep-fitter-resilience tip; beads 5h7 + 589 + UTC hardening + placeholder semantics)",
+    "adam_assist_pin": "default (image-resident 1.2.0)"
+  },
+  "shard_inputs": {
+    "source": "v12 BigQuery fetch (2026-05-08) — 19 shards",
+    "schema_caveats": [
+      "prog column is null on all observations (v12 fetch predates bead 43z; per-program separation not exercised in this catalog)",
+      "band and astcat are populated"
+    ]
+  },
+  "catalog_metrics": {
+    "n_residuals_pre_filter": 5291327,
+    "n_residuals_post_bias_filter": 5148283,
+    "bias_filter_loss_pct": 2.70,
+    "n_objects": 16960,
+    "n_observatories_with_stats": 1226,
+    "n_bias_table_rows": 2802,
+    "hold_in_reduced_chi2_median": 0.728,
+    "hold_in_reduced_chi2_p99": 2.32,
+    "hold_in_fit_success_nonnull_pct": 100.0,
+    "median_abs_residual_ra_arcsec": 0.139,
+    "median_abs_residual_dec_arcsec": 0.132,
+    "p99_abs_residual_ra_arcsec": 1.353
+  },
+  "anchor_validation": {
+    "passes": 8,
+    "total": 13,
+    "failures_explanation": "5 anchors (704, 699, 691, 644, 705) breach pre-EFCC18 legacy magnitude bounds. Bias shifts are expected EFCC18 effects; legacy thresholds need re-baselining for the EFCC18 era. See follow-up bead."
+  },
+  "siblings_to_run_later": {
+    "v2_full_pre_2017": "tcu profile; same group_by, obstime_max=2017-01-01 — Veres-comparison catalog",
+    "v2_full_post_2017": "tcu profile; obstime_min=2017-01-01 — post-Veres-era catalog",
+    "v2_with_prog": "requires fresh BigQuery fetch (post-43z) to populate prog column; needed for per-(stn, prog) signals (e.g. Tholen vs Micheli at 568)"
+  }
+}

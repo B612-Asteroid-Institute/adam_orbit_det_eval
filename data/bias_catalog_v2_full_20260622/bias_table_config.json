@@ -1,0 +1,25 @@
+{
+  "looo_results": "data/mpc_scale_results_v2_full_20260622/published/looo_results_atct.parquet",
+  "observations": "data/mpc_scale_results_v2_full_20260622/all_observations.parquet",
+  "output_dir": "data/mpc_scale_results_v2_full_20260622/published/bias_catalog",
+  "min_obs_per_group": 10,
+  "min_objects_per_group": 3,
+  "max_hold_in_reduced_chi2": 100.0,
+  "max_object_mean_chi2": null,
+  "bootstrap": {
+    "n_resamples": 2000,
+    "random_seed": 42,
+    "ci_lower_pct": 2.5,
+    "ci_upper_pct": 97.5,
+    "max_cells_per_chunk": 20000000
+  },
+  "n_rows": 2802,
+  "n_observatory_rows": 2802,
+  "n_program_rows": 0,
+  "dims_populated": [
+    "ra",
+    "dec",
+    "at",
+    "ct"
+  ]
+}

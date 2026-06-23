@@ -300,7 +300,6 @@ def main():
 
     client = BigQueryMPCClient(
         dataset_id=args.dataset_id,
-        views_dataset_id=args.views_dataset_id,
         project=args.project,
     )
 

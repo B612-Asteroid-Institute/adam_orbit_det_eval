@@ -1,7 +1,7 @@
 {
   "name": "mpc-real-data-looo",
   "namespace": "research-kat",
-  "queue": "cpu-ondemand",
+  "queue": "cpu-spot",
   "mode": "indexed",
   "image": "us-west1-docker.pkg.dev/moeyens-thor-dev/ai/mpc-real-data-looo:v2-full-20260622",
   "resources": {
@@ -11,12 +11,12 @@
   },
   "job": {
     "completions": 19,
-    "parallelism": 3,
+    "parallelism": 14,
     "ttl_seconds_after_finished": 172800
   },
   "retry": {
-    "backoff_limit_per_index": 6,
-    "max_failed_indexes": 4
+    "backoff_limit_per_index": 30,
+    "max_failed_indexes": 19
   },
   "outputs": {
     "gcs_prefix": "gs://exp-research/mpc-real-data-looo-v2-full-20260622"

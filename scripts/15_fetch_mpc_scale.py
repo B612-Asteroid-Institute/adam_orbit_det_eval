@@ -170,14 +170,21 @@ obs_stats AS (
     -- shard parquets themselves.
     --
     -- Source-data sanity filters (bead ie2, audit items C & D): drop rows
-    -- with non-physical observation time (obstime <= 0 / NULL) or RA outside
-    -- [0, 360). A small number of such defective rows exist in the v12 source;
+    -- with non-physical observation time (NULL obstime) or RA outside
+    -- [0, 360). A small number of such defective rows exist in the source;
     -- filtering here at the BQ level means they never count toward eligibility
     -- and never materialize into the shard parquets.
+    --
+    -- NOTE: As of 2026-06-23, public_obs_sbn.obstime is TIMESTAMP-typed and
+    -- ra/dec are STRING-typed (ADES sexagesimal-or-decimal representation).
+    -- The original `obstime > 0` (numeric MJD assumption) and `obs.ra >= 0`
+    -- (numeric assumption) checks no longer typecheck. SAFE_CAST handles the
+    -- decimal-degree case; obstime NULL check replaces the non-physical-time
+    -- filter (TIMESTAMPs cannot be negative).
     WHERE obs.status != 'I'
-      AND obs.obstime > 0
-      AND obs.ra >= 0
-      AND obs.ra < 360
+      AND obs.obstime IS NOT NULL
+      AND SAFE_CAST(obs.ra AS FLOAT64) >= 0
+      AND SAFE_CAST(obs.ra AS FLOAT64) < 360
     GROUP BY obs.provid
     HAVING COUNT(DISTINCT obs.stn) >= {min_observatories}
 )
@@ -233,7 +240,13 @@ def write_shard(
             f"{i // batch_size + 1}/{(len(shard_provids) - 1) // batch_size + 1} "
             f"({len(batch)} objects)"
         )
-        obs_chunks.append(client.query_observations(batch))
+        # column_mode="ades" is REQUIRED for v2: the default "minimal" mode
+        # SELECTs only 10 columns (obsid, provid, permid, obstime, ra, dec,
+        # stn, mag, band, status) and the remaining MPCObservations columns
+        # (prog, astcat, rmsra, rmsdec, ...) come back as all-null fills.
+        # v2 LOOO depends on prog and astcat being populated. (Discovered
+        # 2026-06-23 while debugging the with_prog rerun.)
+        obs_chunks.append(client.query_observations(batch, column_mode="ades"))
     all_obs = qv.concatenate(obs_chunks)
 
     # Drop ITF candidate rows (status='I') that slipped past the BQ candidate
@@ -298,9 +311,13 @@ def main():
         )
         sys.exit(1)
 
+    # NOTE: views_dataset_id was dropped from BigQueryMPCClient at some point
+    # between v12 fetch (2026-05-08) and 2026-06-23. The arg is preserved in
+    # argparse + fetch_metadata.json for backward-compat provenance but no
+    # longer passed to the client. The mpc_sbn_aurora_views dataset doesn't
+    # currently exist in moeyens-thor-dev either.
     client = BigQueryMPCClient(
         dataset_id=args.dataset_id,
-        views_dataset_id=args.views_dataset_id,
         project=args.project,
     )
 

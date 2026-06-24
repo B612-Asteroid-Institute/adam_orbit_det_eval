@@ -128,7 +128,8 @@ LIMIT {args.n_objects + 20}
     logger.info(f"Merged candidate list: {len(ordered)} objects")
 
     # ── 3. Fetch observations in batches
-    BATCH = 10
+    # BATCH bumped 10→2000 on 2026-06-24 after BQ cost incident.
+    BATCH = 2000
     obs_chunks = []
     for i in range(0, len(ordered), BATCH):
         batch = ordered[i: i + BATCH]

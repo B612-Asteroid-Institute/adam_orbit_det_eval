@@ -185,7 +185,11 @@ def main():
     logger.info(f"Got {len(provids)} candidate provids")
 
     # --- Fetch observations in batches ---
-    BATCH_SIZE = 25
+    # BATCH_SIZE bumped from 25 to 2000 on 2026-06-24 after cost incident:
+    # each mpcq.query_observations call against obs_sbn bills ~179 GB
+    # (~$0.87/call) due to provid filter not being on a partition/cluster
+    # key. Tiny batches multiply cost; larger batches amortize the scan.
+    BATCH_SIZE = 2000
     obs_chunks = []
     for i in range(0, len(provids), BATCH_SIZE):
         batch = provids[i : i + BATCH_SIZE]

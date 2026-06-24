@@ -63,6 +63,26 @@ DEFAULT_VIEWS_DATASET_ID = "mpc_sbn_aurora_views"
 #   6=Hungaria, 7=MBA, 8=Hilda, 9=Jupiter Trojan, 10=Distant Object
 ASTEROID_ORBIT_TYPES = (1, 10)  # inclusive range
 
+# Narrow column list for the LOOO + EFCC18 pipeline. Selecting only these
+# (out of obs_sbn's ~80 cols) cuts per-query bytes-billed from ~179 GB to
+# ~50 GB. Audited 2026-06-24 against utils.mpc_to_od_observations,
+# preprocess_efcc18, looo/pipeline, and wl0 group-key requirements.
+#
+# DO NOT EXPAND THIS LIST without checking the downstream pipeline reads;
+# every column added scans the full 235 GB unpruned table.
+LOOO_OBSERVATION_COLUMNS = [
+    # identifiers / joining
+    "obsid", "provid", "permid", "trksub", "trkid",
+    # core astrometry
+    "obstime", "ra", "dec", "stn",
+    # sigma model (utils.py)
+    "rmsra", "rmsdec", "rmscorr",
+    # group keys + sigma fill-in inputs (wl0, EFCC18, Veres fallback)
+    "astcat", "band", "mag", "rmsmag", "prog",
+    # filtering / status
+    "status", "mode", "deprecated",
+]
+
 
 def parse_args():
     p = argparse.ArgumentParser(
@@ -219,7 +239,7 @@ def write_shard(
     shard_provids: list[str],
     client,
     output_dir: Path,
-    batch_size: int = 25,
+    batch_size: int = 2000,
 ):
     """
     Fetch observations and orbits for a shard's provids and write parquet files.
@@ -240,13 +260,19 @@ def write_shard(
             f"{i // batch_size + 1}/{(len(shard_provids) - 1) // batch_size + 1} "
             f"({len(batch)} objects)"
         )
-        # column_mode="ades" is REQUIRED for v2: the default "minimal" mode
-        # SELECTs only 10 columns (obsid, provid, permid, obstime, ra, dec,
-        # stn, mag, band, status) and the remaining MPCObservations columns
-        # (prog, astcat, rmsra, rmsdec, ...) come back as all-null fills.
-        # v2 LOOO depends on prog and astcat being populated. (Discovered
-        # 2026-06-23 while debugging the with_prog rerun.)
-        obs_chunks.append(client.query_observations(batch, column_mode="ades"))
+        # Use the narrow LOOO_OBSERVATION_COLUMNS list. Each batch's BQ
+        # bytes-billed roughly tracks the SELECT-list width × full-table size
+        # because the provid filter isn't on a partition/cluster key, so
+        # narrow SELECT is one of the two main cost levers (the other is
+        # large batch_size). Combined: 14/80 cols × ~21 batches takes the
+        # full with_prog fetch from ~$552 down to ~$4.
+        #
+        # Cost-incident root cause (2026-06-24): default column_mode + tiny
+        # batch_size caused 547+ identical 179.4 GB queries totaling >$500.
+        # See bd memory `bq-fetch-cost-discipline` for the full audit.
+        obs_chunks.append(
+            client.query_observations(batch, columns=LOOO_OBSERVATION_COLUMNS)
+        )
     all_obs = qv.concatenate(obs_chunks)
 
     # Drop ITF candidate rows (status='I') that slipped past the BQ candidate

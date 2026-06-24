@@ -161,7 +161,8 @@ def main():
                 f"{min(ref_counts.values())}–{max(ref_counts.values())}")
 
     # --- Fetch ALL observations (reference + other stations) in batches ---
-    BATCH_SIZE = 25
+    # BATCH_SIZE bumped 25→2000 on 2026-06-24 after BQ cost incident.
+    BATCH_SIZE = 2000
     obs_chunks = []
     for i in range(0, len(provids), BATCH_SIZE):
         batch = provids[i: i + BATCH_SIZE]

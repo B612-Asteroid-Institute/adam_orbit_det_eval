@@ -234,6 +234,53 @@ def get_completed_provids(output_dir: Path, metadata: dict | None) -> set[str]:
     return completed
 
 
+def _query_observations_with_retry(client, batch, columns, label):
+    """
+    Call query_observations with in-process retry on transient BQ errors.
+
+    Cost-incident lesson (2026-06-24): wrapping this script in an
+    external auto-restart loop blindly re-pays for in-flight shard
+    batches on each restart, because shard-level resumability gates
+    AFTER all batches complete. Instead, absorb transient BQ errors
+    (Service 503, gRPC Connection reset, deadline exceeded) HERE — each
+    BQ call fires once, and only the failed call retries.
+
+    On unrecoverable failure we raise so the operator sees it and can
+    investigate (a DO-NOT-auto-restart contract). See bd memory
+    `bq-fetch-cost-discipline`.
+    """
+    import time
+    from google.api_core import exceptions as gapi_exc
+
+    delays = [30, 60, 120, 240, 480]  # exponential-ish backoff
+    transient = (
+        gapi_exc.ServiceUnavailable,
+        gapi_exc.DeadlineExceeded,
+        gapi_exc.InternalServerError,
+        gapi_exc.TooManyRequests,
+        ConnectionError,
+    )
+    for attempt, delay in enumerate([0] + delays):
+        if delay:
+            logger.warning(
+                f"  {label}: retry {attempt}/{len(delays)} after transient BQ error, sleeping {delay}s"
+            )
+            time.sleep(delay)
+        try:
+            return client.query_observations(batch, columns=columns)
+        except transient as e:
+            if attempt == len(delays):
+                logger.error(
+                    f"  {label}: exhausted {len(delays)} retries; "
+                    f"raising to operator (do NOT auto-restart). Last error: {e!r}"
+                )
+                raise
+            continue
+        except Exception:
+            # Non-transient errors are not retried (would re-pay for full BQ scan).
+            raise
+
+
 def write_shard(
     shard_idx: int,
     shard_provids: list[str],
@@ -251,27 +298,25 @@ def write_shard(
     shard_dir = output_dir / f"shard_{shard_idx:03d}"
     shard_dir.mkdir(parents=True, exist_ok=True)
 
-    # Fetch observations in batches
+    # Fetch observations in batches.
+    #
+    # Per-batch BQ cost is ~$0.30 with the narrowed SELECT (see
+    # LOOO_OBSERVATION_COLUMNS). Retries are absorbed in-process via
+    # _query_observations_with_retry so a transient 503 doesn't require
+    # an external restart (which would re-pay for sibling batches).
     obs_chunks = []
     for i in range(0, len(shard_provids), batch_size):
         batch = shard_provids[i : i + batch_size]
-        logger.info(
-            f"  Shard {shard_idx:03d} obs batch "
+        label = (
+            f"Shard {shard_idx:03d} obs batch "
             f"{i // batch_size + 1}/{(len(shard_provids) - 1) // batch_size + 1} "
             f"({len(batch)} objects)"
         )
-        # Use the narrow LOOO_OBSERVATION_COLUMNS list. Each batch's BQ
-        # bytes-billed roughly tracks the SELECT-list width × full-table size
-        # because the provid filter isn't on a partition/cluster key, so
-        # narrow SELECT is one of the two main cost levers (the other is
-        # large batch_size). Combined: 14/80 cols × ~21 batches takes the
-        # full with_prog fetch from ~$552 down to ~$4.
-        #
-        # Cost-incident root cause (2026-06-24): default column_mode + tiny
-        # batch_size caused 547+ identical 179.4 GB queries totaling >$500.
-        # See bd memory `bq-fetch-cost-discipline` for the full audit.
+        logger.info(f"  {label}")
         obs_chunks.append(
-            client.query_observations(batch, columns=LOOO_OBSERVATION_COLUMNS)
+            _query_observations_with_retry(
+                client, batch, LOOO_OBSERVATION_COLUMNS, label
+            )
         )
     all_obs = qv.concatenate(obs_chunks)
 

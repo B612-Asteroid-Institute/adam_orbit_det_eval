@@ -1,0 +1,35 @@
+{
+  "name": "mpc-real-data-looo-withprog",
+  "namespace": "research-kat",
+  "queue": "cpu-spot",
+  "mode": "indexed",
+  "image": "us-west1-docker.pkg.dev/moeyens-thor-dev/ai/mpc-real-data-looo:v2-full-20260622",
+  "resources": {
+    "cpu": "7",
+    "memory": "16Gi",
+    "gpu": 0
+  },
+  "job": {
+    "completions": 21,
+    "parallelism": 14,
+    "ttl_seconds_after_finished": 172800
+  },
+  "retry": {
+    "backoff_limit_per_index": 30,
+    "max_failed_indexes": 21
+  },
+  "outputs": {
+    "gcs_prefix": "gs://exp-research/mpc-real-data-looo-v2-full-with-prog-20260624"
+  },
+  "command": [
+    "python",
+    "/app/adam_orbit_det_eval/scripts/12_run_looo_cloud_shard.py",
+    "--gcs-input-prefix", "gs://exp-research/mpc-real-data-looo-v2-full-with-prog-20260624/input",
+    "--gcs-output-prefix", "gs://exp-research/mpc-real-data-looo-v2-full-with-prog-20260624/output",
+    "--propagator", "assist",
+    "--orbit-fitter", "findorb",
+    "--strict-fitter",
+    "--profile", "v2_full",
+    "--max-processes", "5"
+  ]
+}

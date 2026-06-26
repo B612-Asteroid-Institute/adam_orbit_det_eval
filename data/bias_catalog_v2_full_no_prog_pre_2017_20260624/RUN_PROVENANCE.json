@@ -1,0 +1,44 @@
+{
+  "catalog_name": "v2_full_no_prog_pre_2017",
+  "catalog_date": "2026-06-26",
+  "bead": "54t (sibling catalog of v2_full_no_prog)",
+  "run_profile": "v2_full_pre_2017",
+  "group_by": ["stn", "prog", "band"],
+  "obstime_window": {"min": null, "max": "2017-01-01", "comment": "(min, max] semantics per tcu profile config; matches Veres 2017 Table 1 data window"},
+  "prog_status": "NULL on all rows (v12 BQ fetch from 2026-05-08 predates bead 43z; same input as v2_full_no_prog and v2_full_no_prog_post_2017)",
+  "preprocessing": {
+    "efcc18_applied": true,
+    "efcc18_bias_dat_source": "data/efcc18/bias.parquet"
+  },
+  "cloud_run": {
+    "job_uid": "mpc-real-data-looo-noprog-pre2017-20260624164106",
+    "image": "us-west1-docker.pkg.dev/moeyens-thor-dev/ai/mpc-real-data-looo:v2-full-20260622",
+    "namespace": "research-kat",
+    "queue": "cpu-spot",
+    "completions": 19,
+    "parallelism": 14,
+    "duration": "3h09m",
+    "pod_failures_absorbed": 58,
+    "failed_indices": 0
+  },
+  "gcs": {
+    "input_prefix": "gs://exp-research/mpc-real-data-looo-v2-full-20260622/input/ (shared with v2_full_no_prog)",
+    "output_prefix": "gs://exp-research/mpc-real-data-looo-v2-full-no-prog-pre-2017-20260624/output/"
+  },
+  "code_pins": {
+    "adam_orbit_det_eval_branch": "kk/v2-prep-runbook (at tip)",
+    "adam_core_pin": "e6f89108",
+    "adam_fo_pin": "b10b622"
+  },
+  "catalog_metrics": {
+    "n_residuals_pre_filter": 1869918,
+    "n_objects_in_collect": 11108,
+    "n_observatories_with_stats": 852,
+    "n_bias_table_rows": 1767
+  },
+  "sibling_catalogs": {
+    "v2_full_no_prog": "data/bias_catalog_v2_full_no_prog_20260622/ (full archive)",
+    "v2_full_no_prog_post_2017": "data/bias_catalog_v2_full_no_prog_post_2017_20260624/ (obstime > 2017-01-01)",
+    "v2_full_with_prog": "in flight 2026-06-26 (cloud job mpc-real-data-looo-withprog-20260626152311; will populate prog from fresh BQ fetch)"
+  }
+}

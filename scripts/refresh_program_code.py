@@ -294,7 +294,6 @@ def aggregate_from_sidecar(
     from adam_orbit_det_eval.looo.bias_table import (
         BootstrapConfig,
         compute_bias_table,
-        validate_against_anchors,
     )
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -348,19 +347,6 @@ def aggregate_from_sidecar(
     config_path.write_text(json.dumps(cfg, indent=2))
     logger.info("Wrote %s", config_path)
 
-    # anchor helpers live in scripts/17_generate_bias_table.py (filename
-    # starts with a digit, so use importlib).
-    sys.path.insert(0, str(REPO_ROOT / "scripts"))
-    try:
-        from importlib import import_module
-        _gen17 = import_module("17_generate_bias_table")
-    finally:
-        sys.path.pop(0)
-    anchors = _gen17.default_anchor_stations()
-    validation_df = validate_against_anchors(bias_table, anchors)
-    report_path = out_dir / "validation_report.txt"
-    report_path.write_text(_gen17.format_validation_report(validation_df, anchors))
-    logger.info("Wrote %s", report_path)
 
 
 def aggregate_program_code_stats(sidecar_path: Path, out_path: Path) -> None:

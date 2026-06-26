@@ -171,7 +171,6 @@ def run_bias_table(
     min_obs_per_group: int | None = None,
     min_objects_per_group: int | None = None,
     max_chi2: float | None = None,
-    validate_anchors: bool = False,
 ) -> Path:
     """Step 2 — delegate to 17_generate_bias_table.py. Returns the catalog dir."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -190,8 +189,6 @@ def run_bias_table(
         argv += ["--min-objects-per-group", str(min_objects_per_group)]
     if max_chi2 is not None:
         argv += ["--max-chi2", str(max_chi2)]
-    if validate_anchors:
-        argv += ["--validate-anchors"]
 
     _run_script(BIAS_TABLE_SCRIPT, argv)
 
@@ -222,7 +219,6 @@ def publish_catalog(
     min_obs_per_group: int | None = None,
     min_objects_per_group: int | None = None,
     max_chi2: float | None = None,
-    validate_anchors: bool = False,
 ) -> dict:
     """Run 16 → (d5b guard) → 17 atomically and return the output paths.
 
@@ -279,7 +275,6 @@ def publish_catalog(
         min_obs_per_group=min_obs_per_group,
         min_objects_per_group=min_objects_per_group,
         max_chi2=max_chi2,
-        validate_anchors=validate_anchors,
     )
 
     summary = {
@@ -331,9 +326,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Forwarded to script 17 (default: its own 3).")
     p.add_argument("--max-chi2", type=float, default=None,
                    help="Forwarded to script 17 (default: its own 100).")
-    p.add_argument("--validate-anchors", action="store_true",
-                   help="Forwarded to script 17: write anchor validation "
-                        "report (only meaningful on the full catalog).")
     return p.parse_args(argv)
 
 
@@ -352,7 +344,6 @@ def main(argv: list[str] | None = None) -> int:
             min_obs_per_group=args.min_obs_per_group,
             min_objects_per_group=args.min_objects_per_group,
             max_chi2=args.max_chi2,
-            validate_anchors=args.validate_anchors,
         )
     except PublishError as e:
         logger.error("PUBLISH FAILED: %s", e)

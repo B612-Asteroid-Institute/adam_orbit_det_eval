@@ -86,9 +86,21 @@ RUN cd /app/adam_core && PDM_BUILD_SCM_VERSION=99.0.0 pip install --no-cache-dir
 COPY adam_fo/ /app/adam_fo/
 RUN cd /app/adam_fo && PDM_BUILD_SCM_VERSION=99.0.0 pip install --no-cache-dir --no-deps .
 
+# --- Tier-2 git pins from pyproject.toml. These MUST be installed explicitly
+# because the adam_orbit_det_eval install below uses --no-deps, which records
+# the pyproject pins in METADATA but does not actually install them. The base
+# image's stale wheel for mpcq (0.4.0, predates the `prog` column) would
+# otherwise silently win, and `MPCObservations.from_parquet` would drop prog
+# at runtime — causing the v2_full_with_prog catalog of 2026-06-26 to have
+# program_code=0% on all 5.68M rows. Audited 2026-06-29.
+RUN pip install --no-cache-dir "mpcq @ git+https://github.com/B612-Asteroid-Institute/mpcq.git@42e447b"
+
 # --- Overlay workspace adam_orbit_det_eval (all bug fixes) ---
 COPY adam_orbit_det_eval/ /app/adam_orbit_det_eval/
 RUN cd /app/adam_orbit_det_eval && pip install --no-cache-dir --no-deps .
+
+# --- prog-survives-from_parquet smoke (regression guard for the 2026-06-29 incident) ---
+RUN python -c "from mpcq.observations import MPCObservations; assert 'prog' in [f.name for f in MPCObservations.schema().fields], 'mpcq MPCObservations missing prog column — base-image wheel is winning over the git pin'" && echo "mpcq prog column present"
 
 # --- Import-level smoke tests (fast) ---
 RUN python -c "from adam_fo.find_orb_orbit_fitter import FindOrbOrbitFitter; f = FindOrbOrbitFitter(fo_result_dir='/tmp/fo_smoke'); print('findorb instantiation OK')"

@@ -748,6 +748,188 @@ def test_mpc_to_od_observations_bias_subtract_sem_inflated() -> None:
         raise AssertionError("Expected ValueError for missing station_bias_ci_arcsec")
 
 
+def _make_synthetic_obs_corr(
+    ra_deg: float,
+    dec_deg: float,
+    stn: str,
+    rmsra: float,
+    rmsdec: float,
+    rmscorr: float,
+    obs_id: str = "synthetic-corr-1",
+) -> MPCObservations:
+    """Single-row MPCObservations with an explicit baseline RA/Dec correlation."""
+    t = Timestamp.from_iso8601(["2024-01-01T00:00:00"], scale="utc")
+    return MPCObservations.from_kwargs(
+        requested_provid=[obs_id],
+        primary_designation=[obs_id],
+        obsid=[obs_id],
+        trksub=["trk1"],
+        provid=[obs_id],
+        permid=[None],
+        submission_id=[None],
+        obssubid=[None],
+        obstime=t,
+        ra=[ra_deg],
+        dec=[dec_deg],
+        rmsra=[rmsra],
+        rmsdec=[rmsdec],
+        rmscorr=[rmscorr],
+        mag=[20.0],
+        rmsmag=[0.1],
+        band=["V"],
+        stn=[stn],
+        updated_at=t,
+        created_at=t,
+        status=["valid"],
+        astcat=["UCAC4"],
+        mode=["CCD"],
+    )
+
+
+def test_mpc_to_od_observations_bias_empirical_covar() -> None:
+    """empirical_covar: 2×2 cov += MEASURED [[rv_ra, rcov], [rcov, rv_dec]].
+
+    Verifies (1) the inflated diagonals, (2) the off-diagonal cross-term to
+    1e-9, (3) the resid_cov_n threshold gate, (4) passthrough for absent
+    stations, (5) the cross-term adds *onto* a non-zero baseline correlation,
+    and (6) the missing-arg ValueError.
+    """
+    ra_deg = 50.0
+    dec_deg = 0.0  # cos(dec)=1 keeps the σ math direct
+    stn = "Z99"
+    # Baseline σ_ra = σ_dec = 0.5", baseline corr = 0.
+    obs = _make_synthetic_obs(ra_deg=ra_deg, dec_deg=dec_deg, stn=stn)
+
+    rv_ra = 0.30  # arcsec²
+    rv_dec = 0.20
+    rcov = 0.10
+    n = 100.0
+
+    od = mpc_to_od_observations(
+        obs,
+        prevent_nans=False,
+        bias_application="empirical_covar",
+        station_resid_covar={stn: (rv_ra, rv_dec, rcov, n)},
+    )
+    assert od is not None
+
+    cos_dec = np.cos(np.deg2rad(dec_deg))
+    sigmas_deg = od.coordinates.covariance.sigmas
+    # (1) Inflated diagonals: σ² = 0.5² + resid_var.
+    np.testing.assert_allclose(
+        sigmas_deg[0, 1] * cos_dec * 3600.0, float(np.sqrt(0.25 + rv_ra)), rtol=1e-9
+    )
+    np.testing.assert_allclose(
+        sigmas_deg[0, 2] * 3600.0, float(np.sqrt(0.25 + rv_dec)), rtol=1e-9
+    )
+    # (2) Cross-term: cov_rd_arcsec² = baseline(0) + rcov = 0.10. At dec=0 the
+    # cos(dec)-corrected frame coincides with the (lon, lat) deg frame, so
+    # cov[1,2] * 3600² recovers the cos(dec) cross-covariance directly.
+    cov_mat = od.coordinates.covariance.to_matrix()
+    np.testing.assert_allclose(cov_mat[0, 1, 2] * (3600.0**2), rcov, atol=1e-9)
+    # Positions are NEVER touched by empirical_covar (HARD constraint).
+    np.testing.assert_allclose(
+        od.coordinates.lon.to_numpy(zero_copy_only=False), [ra_deg], atol=1e-12
+    )
+    np.testing.assert_allclose(
+        od.coordinates.lat.to_numpy(zero_copy_only=False), [dec_deg], atol=1e-12
+    )
+
+    # (3) Below-threshold residual sample (n < 30) → pass through unchanged.
+    od_lown = mpc_to_od_observations(
+        obs,
+        prevent_nans=False,
+        bias_application="empirical_covar",
+        station_resid_covar={stn: (rv_ra, rv_dec, rcov, 10.0)},
+        resid_cov_n_threshold=30,
+    )
+    sd = od_lown.coordinates.covariance.sigmas
+    np.testing.assert_allclose(sd[0, 1] * cos_dec * 3600.0, 0.5, rtol=1e-9)
+    np.testing.assert_allclose(sd[0, 2] * 3600.0, 0.5, rtol=1e-9)
+    np.testing.assert_allclose(
+        od_lown.coordinates.covariance.to_matrix()[0, 1, 2], 0.0, atol=1e-30
+    )
+
+    # (4) Station absent from the dict → unchanged.
+    od_absent = mpc_to_od_observations(
+        obs,
+        prevent_nans=False,
+        bias_application="empirical_covar",
+        station_resid_covar={"OTHER": (rv_ra, rv_dec, rcov, n)},
+    )
+    sda = od_absent.coordinates.covariance.sigmas
+    np.testing.assert_allclose(sda[0, 1] * cos_dec * 3600.0, 0.5, rtol=1e-9)
+    np.testing.assert_allclose(sda[0, 2] * 3600.0, 0.5, rtol=1e-9)
+
+    # (5) Non-zero baseline correlation: the measured rcov adds onto the
+    # baseline cross-term (corr_base · σ_ra · σ_dec).
+    obs_corr = _make_synthetic_obs_corr(
+        ra_deg=ra_deg, dec_deg=dec_deg, stn=stn,
+        rmsra=0.5, rmsdec=0.5, rmscorr=0.4,
+    )
+    od_corr = mpc_to_od_observations(
+        obs_corr,
+        prevent_nans=False,
+        bias_application="empirical_covar",
+        station_resid_covar={stn: (rv_ra, rv_dec, rcov, n)},
+    )
+    base_cross = 0.4 * 0.5 * 0.5  # corr · σ_ra · σ_dec, arcsec²
+    cov_corr = od_corr.coordinates.covariance.to_matrix()
+    np.testing.assert_allclose(
+        cov_corr[0, 1, 2] * (3600.0**2), base_cross + rcov, atol=1e-9
+    )
+    # Diagonals unchanged by baseline corr; still σ² = 0.25 + resid_var.
+    sc = od_corr.coordinates.covariance.sigmas
+    np.testing.assert_allclose(
+        sc[0, 1] * cos_dec * 3600.0, float(np.sqrt(0.25 + rv_ra)), rtol=1e-9
+    )
+    np.testing.assert_allclose(
+        sc[0, 2] * 3600.0, float(np.sqrt(0.25 + rv_dec)), rtol=1e-9
+    )
+
+    # (6) Missing station_resid_covar → ValueError.
+    try:
+        mpc_to_od_observations(
+            obs, prevent_nans=False, bias_application="empirical_covar"
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Expected ValueError for missing station_resid_covar")
+
+
+def test_load_v2_bias_catalog_rollup() -> None:
+    """v2 catalog loader keeps one per-station rollup row and exposes Fix-2 cols."""
+    from ..utils import load_v2_bias_catalog
+
+    v2_path = (
+        "/Users/kathleenkiker/beads_agent_setup/adam_orbit_det_eval/"
+        "data/bias_catalog_v2_full_no_prog_20260622/bias_table.parquet"
+    )
+    if not Path(v2_path).exists():
+        import pytest
+
+        pytest.skip("v2 catalog not present in this environment")
+
+    cat = load_v2_bias_catalog(v2_path, rollup_only=True)
+    # One record per station (per the rollup filter).
+    assert len(cat) == 1123
+    # Every record carries the Fix-2 residual-covariance fields.
+    sample = next(iter(cat.values()))
+    for key in (
+        "bias_ra", "bias_dec", "sem_ra", "sem_dec", "chi2_per_obs",
+        "rms_ra", "rms_dec", "bias_significant", "high_confidence",
+        "resid_var_ra", "resid_var_dec", "resid_cov_ra_dec", "resid_cov_n",
+        "bias_at", "bias_ct", "resid_var_at", "resid_var_ct", "resid_cov_at_ct",
+    ):
+        assert key in sample, f"missing field {key}"
+    # Spot-check a known station against the raw catalog (station 006).
+    assert "006" in cat
+    np.testing.assert_allclose(
+        np.sqrt(cat["006"]["resid_var_ra"]), cat["006"]["rms_ra"], rtol=0.1
+    )
+
+
 def test_mpc_to_od_observations_sigma_model_veres2017_fills_missing() -> None:
     """When MPC sigmas are missing, sigma_model='veres2017' fills from the lookup."""
     obs_time = Timestamp.from_iso8601(["2024-01-01T00:00:00"], scale="utc")

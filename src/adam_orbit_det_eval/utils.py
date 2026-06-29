@@ -2,6 +2,8 @@ import json
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+import pyarrow.compute as pc
+import pyarrow.parquet as pq
 from adam_core.coordinates import CoordinateCovariances, Origin, SphericalCoordinates
 from adam_core.observers import Observers
 from adam_core.orbit_determination.evaluate import (
@@ -133,6 +135,8 @@ def mpc_to_od_observations(
     atct_bias_table: Optional[Dict[str, Tuple[float, float]]] = None,
     atct_unit_vectors: Optional[np.ndarray] = None,
     station_bias_ci_arcsec: Optional[Dict[str, Tuple[float, float]]] = None,
+    station_resid_covar: Optional[Dict[str, Tuple[float, float, float, float]]] = None,
+    resid_cov_n_threshold: int = 30,
 ) -> Optional[OrbitDeterminationObservations]:
     """
     Convert MPC observations into OD observations.
@@ -205,6 +209,25 @@ def mpc_to_od_observations(
                                       covariance via the rmscorr coupling.
                                       Uses the joint structure of the bias
                                       estimate, not just diagonal σ.
+        ``'empirical_covar'``       — Inflate the full 2×2 obs covariance with
+                                      the station's *measured* per-axis
+                                      residual variance + cross-term from the
+                                      v2 catalog (Fix 2 columns), rather than
+                                      the *assumed* ``outer(b, b)`` of
+                                      ``covar_inflation``:
+                                      ``Cov_used = Cov_baseline +
+                                      [[resid_var_ra, resid_cov_ra_dec],
+                                      [resid_cov_ra_dec, resid_var_dec]]``
+                                      (all in cos(dec)-corrected arcsec²).
+                                      Requires ``station_resid_covar``. A
+                                      station is only inflated if it is in the
+                                      dict AND its residual sample size
+                                      ``resid_cov_n >= resid_cov_n_threshold``;
+                                      otherwise it passes through unchanged.
+                                      This is the principled lever the si3
+                                      hold-out flagged: it *measures* the
+                                      RA/Dec residual coupling instead of
+                                      forcing the sign of ``outer(b, b)``.
         ``'at_ct_floor'``           — Sigma-floor applied in the along-track/
                                       cross-track basis of the object's
                                       sky-plane motion. Requires
@@ -276,6 +299,21 @@ def mpc_to_od_observations(
       published 95% CI half-width: ``σ_b = (ci_high - ci_low) / 2 / 1.96``.
       Stations absent from the dict (or from ``bias_table``) pass through
       unchanged.
+    station_resid_covar: dict[str, tuple[float, float, float, float]] or None,
+      default None
+      Used only when ``bias_application='empirical_covar'``. Maps station
+      ``obs_code`` to ``(resid_var_ra, resid_var_dec, resid_cov_ra_dec,
+      resid_cov_n)`` — the measured per-station residual variances and
+      RA/Dec cross-covariance (cos(dec)-corrected arcsec²) plus the residual
+      sample size, from the v2 catalog's Fix 2 columns. Stations absent from
+      the dict, or with ``resid_cov_n < resid_cov_n_threshold``, or with any
+      non-finite residual moment, pass through with the baseline covariance
+      unchanged.
+    resid_cov_n_threshold: int, default 30
+      Used only when ``bias_application='empirical_covar'``. Minimum residual
+      sample size ``resid_cov_n`` required before a station's measured 2×2
+      residual covariance is trusted enough to inflate the obs covariance.
+      Stations below the threshold pass through unchanged (baseline only).
 
     Returns:
     --------
@@ -292,12 +330,17 @@ def mpc_to_od_observations(
         "covar_inflation",
         "at_ct_floor",
         "subtract_sem_inflated",
+        "empirical_covar",
     ):
         raise ValueError(
             f"Unknown bias_application={bias_application!r}; expected one of "
             "'sigma_floor', 'subtract', 'rss_additive', 'performance_weighted', "
             "'bayes_shrinkage', 'veres_v1_max_floor', 'covar_inflation', "
-            "'at_ct_floor', 'subtract_sem_inflated'"
+            "'at_ct_floor', 'subtract_sem_inflated', 'empirical_covar'"
+        )
+    if bias_application == "empirical_covar" and station_resid_covar is None:
+        raise ValueError(
+            "bias_application='empirical_covar' requires station_resid_covar"
         )
     if bias_application == "performance_weighted" and station_chi2_per_obs is None:
         raise ValueError(
@@ -554,6 +597,42 @@ def mpc_to_od_observations(
             cov_ra_cosdec_dec_arcsec_sq[i] = (
                 cov_ra_cosdec_dec_arcsec_sq[i] + bra * bdec
             )
+    elif bias_application == "empirical_covar" and station_resid_covar is not None:
+        # Inflate the 2×2 obs covariance with the station's *measured* residual
+        # covariance from the v2 catalog (Fix 2 columns), rather than the
+        # *assumed* outer(b, b) of covar_inflation. The measured 2×2 is
+        #   [[resid_var_ra,     resid_cov_ra_dec],
+        #    [resid_cov_ra_dec, resid_var_dec    ]]
+        # in the cos(dec)-corrected arcsec² frame (matching MPC's rmsra
+        # convention and the LOOO residual frame the catalog measured in), so
+        # it adds directly onto the baseline (σ², cross-term) accumulators.
+        # A station is inflated only if it appears in the dict AND its residual
+        # sample size resid_cov_n >= resid_cov_n_threshold; otherwise the row
+        # passes through with the baseline covariance unchanged. This measures
+        # the genuine RA/Dec coupling (≈0 for surveys where the axes are
+        # independent, meaningful where they truly correlate) instead of
+        # forcing sign(b_ra·b_dec) the way outer(b, b) does — the failure mode
+        # si3 isolated (PS1/PS2/H21 over-coupling on short arcs).
+        stns_list = obs_set.stn.to_pylist()
+        for i, code in enumerate(stns_list):
+            entry = station_resid_covar.get(code)
+            if entry is None:
+                continue
+            rv_ra, rv_dec, rcov, n = entry
+            if (
+                n is None
+                or not np.isfinite(n)
+                or n < resid_cov_n_threshold
+                or not np.isfinite(rv_ra)
+                or not np.isfinite(rv_dec)
+                or not np.isfinite(rcov)
+            ):
+                continue
+            sigma_ra_cosdec_sq[i] = sigma_ra_cosdec_sq[i] + float(rv_ra)
+            sigma_dec_sq[i] = sigma_dec_sq[i] + float(rv_dec)
+            cov_ra_cosdec_dec_arcsec_sq[i] = (
+                cov_ra_cosdec_dec_arcsec_sq[i] + float(rcov)
+            )
     elif bias_application == "at_ct_floor":
         # Sigma-floor in the AT/CT basis defined by the per-obs sky-plane
         # velocity unit vector. Falls back to a diagonal RA/Dec sigma_floor
@@ -715,3 +794,97 @@ def mpc_to_od_observations(
         photometry=photometry,
     )
     return od_observations
+
+
+# ---------------------------------------------------------------------------
+# v2 bias-catalog loader
+# ---------------------------------------------------------------------------
+
+# (out_key, catalog_column, caster). The v2 catalog stores most fields with an
+# explicit ``_arcsec`` suffix; we strip it to clean keys here. Booleans and the
+# residual-moment columns are passed through under their own names.
+_V2_FIELD_MAP: List[Tuple[str, str, str]] = [
+    ("bias_ra", "bias_ra_arcsec", "float"),
+    ("bias_dec", "bias_dec_arcsec", "float"),
+    ("sem_ra", "sem_ra_arcsec", "float"),
+    ("sem_dec", "sem_dec_arcsec", "float"),
+    ("chi2_per_obs", "chi2_per_obs", "float"),
+    ("rms_ra", "rms_ra_arcsec", "float"),
+    ("rms_dec", "rms_dec_arcsec", "float"),
+    ("bias_significant", "bias_significant", "bool"),
+    ("high_confidence", "high_confidence", "bool"),
+    ("resid_var_ra", "resid_var_ra", "float"),
+    ("resid_var_dec", "resid_var_dec", "float"),
+    ("resid_cov_ra_dec", "resid_cov_ra_dec", "float"),
+    ("resid_cov_n", "resid_cov_n", "float"),
+    ("bias_at", "bias_at_arcsec", "float"),
+    ("bias_ct", "bias_ct_arcsec", "float"),
+    ("resid_var_at", "resid_var_at", "float"),
+    ("resid_var_ct", "resid_var_ct", "float"),
+    ("resid_cov_at_ct", "resid_cov_at_ct", "float"),
+]
+
+
+def load_v2_bias_catalog(
+    path: str,
+    rollup_only: bool = True,
+) -> Dict[str, Dict[str, float]]:
+    """Load the v2 MPC station-bias catalog, keyed by ``obs_code``.
+
+    The v2 catalog (``bias_catalog_v2_full_no_prog_*/bias_table.parquet``) has
+    multiple rows per station — one per ``(band, astcat)`` slice plus a
+    per-station rollup row. For OD experiments that need direct comparability
+    with the v1 per-station rollup, ``rollup_only=True`` keeps only the
+    per-station rollup rows (``band IS NULL AND astcat IS NULL AND
+    program_code IS NULL``), giving exactly one record per station.
+
+    Unlike v1 (where the published catalog was already restricted to
+    high-confidence stations), the v2 ``_full_`` rollup contains *every*
+    station the LOOO measured; ``high_confidence`` is returned as a per-station
+    field so callers can filter on it explicitly (the ``drop_non_HC_stations``
+    variant) rather than relying on table membership.
+
+    Returns ``{obs_code: {field: value, ...}}`` with the fields in
+    ``_V2_FIELD_MAP`` (``bias_ra``, ``bias_dec``, ``sem_ra``, ``sem_dec``,
+    ``chi2_per_obs``, ``rms_ra``, ``rms_dec``, ``bias_significant``,
+    ``high_confidence``, ``resid_var_ra``, ``resid_var_dec``,
+    ``resid_cov_ra_dec``, ``resid_cov_n``, ``bias_at``, ``bias_ct``,
+    ``resid_var_at``, ``resid_var_ct``, ``resid_cov_at_ct``). Missing numeric
+    values are stored as ``float('nan')``; missing booleans as ``False``.
+
+    Note: ``bias_*`` values are measured POST-EFCC18 — any variant that
+    consumes them must apply EFCC18 preprocessing to the observations first.
+    """
+    cols = ["obs_code", "band", "astcat", "program_code"] + [
+        c for _, c, _ in _V2_FIELD_MAP
+    ]
+    table = pq.read_table(path, columns=cols)
+    if rollup_only:
+        mask = pc.and_(
+            pc.and_(
+                pc.is_null(table.column("band")),
+                pc.is_null(table.column("astcat")),
+            ),
+            pc.is_null(table.column("program_code")),
+        )
+        table = table.filter(mask)
+
+    codes = table.column("obs_code").to_pylist()
+    col_lists = {
+        out_key: table.column(col).to_pylist() for out_key, col, _ in _V2_FIELD_MAP
+    }
+    casters = {out_key: kind for out_key, _, kind in _V2_FIELD_MAP}
+
+    out: Dict[str, Dict[str, float]] = {}
+    for i, code in enumerate(codes):
+        if code is None:
+            continue
+        rec: Dict[str, float] = {}
+        for out_key in col_lists:
+            v = col_lists[out_key][i]
+            if casters[out_key] == "bool":
+                rec[out_key] = bool(v) if v is not None else False
+            else:
+                rec[out_key] = float(v) if v is not None else float("nan")
+        out[str(code)] = rec
+    return out

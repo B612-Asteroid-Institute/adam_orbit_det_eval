@@ -100,7 +100,7 @@ COPY adam_orbit_det_eval/ /app/adam_orbit_det_eval/
 RUN cd /app/adam_orbit_det_eval && pip install --no-cache-dir --no-deps .
 
 # --- prog-survives-from_parquet smoke (regression guard for the 2026-06-29 incident) ---
-RUN python -c "from mpcq.observations import MPCObservations; assert 'prog' in [f.name for f in MPCObservations.schema().fields], 'mpcq MPCObservations missing prog column — base-image wheel is winning over the git pin'" && echo "mpcq prog column present"
+RUN python -c "from mpcq.observations import MPCObservations; assert 'prog' in [f.name for f in MPCObservations.schema], 'mpcq MPCObservations missing prog column — base-image wheel is winning over the git pin'" && echo "mpcq prog column present"
 
 # --- Import-level smoke tests (fast) ---
 RUN python -c "from adam_fo.find_orb_orbit_fitter import FindOrbOrbitFitter; f = FindOrbOrbitFitter(fo_result_dir='/tmp/fo_smoke'); print('findorb instantiation OK')"

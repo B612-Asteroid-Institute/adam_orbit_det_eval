@@ -311,6 +311,18 @@ class HeldoutResult:
     resid_rms_deb_arcsec: float = float("nan")
     resid_median_raw_arcsec: float = float("nan")
     n_test_used: int = 0
+    # EFCC18 coverage (fraction of obs with a non-zero EFCC18 correction)
+    efcc_frac_all: float = float("nan")
+    efcc_frac_train: float = float("nan")
+    # SYSTEMATIC (coherent / signed) held-out residual — what debiasing removes;
+    # RMS above is dominated by random short-arc error, this isolates the bias.
+    resid_mean_ra_arcsec: float = float("nan")   # mean signed RA*cos(dec)
+    resid_mean_dec_arcsec: float = float("nan")  # mean signed Dec
+    resid_systematic_arcsec: float = float("nan")  # |mean (RA*cos, Dec)| offset
+    resid_mean_at_arcsec: float = float("nan")   # mean signed along-track
+    resid_mean_ct_arcsec: float = float("nan")   # mean signed cross-track
+    resid_rms_at_arcsec: float = float("nan")
+    resid_rms_ct_arcsec: float = float("nan")
 
 
 def run_single(rec: HeldoutResult, variant, prepared: Prepared,
@@ -366,6 +378,35 @@ def run_single(rec: HeldoutResult, variant, prepared: Prepared,
         rec.resid_rms_raw_arcsec = float(np.sqrt(np.mean(r_raw[good] ** 2)))
         rec.resid_rms_deb_arcsec = float(np.sqrt(np.mean(r_deb[np.isfinite(r_deb)] ** 2)))
         rec.resid_median_raw_arcsec = float(np.median(r_raw[good]))
+
+        # SYSTEMATIC (signed) residual — the coherent offset debiasing should remove.
+        dra = (obs_ra - pred_ra + 180.0) % 360.0 - 180.0
+        dra_as = dra * cosd * 3600.0          # signed RA*cos(dec), arcsec
+        ddec_as = (obs_dec - pred_dec) * 3600.0
+        rec.resid_mean_ra_arcsec = float(np.mean(dra_as[good]))
+        rec.resid_mean_dec_arcsec = float(np.mean(ddec_as[good]))
+        rec.resid_systematic_arcsec = float(np.hypot(rec.resid_mean_ra_arcsec,
+                                                     rec.resid_mean_dec_arcsec))
+        # Along-track / cross-track via the predicted sky-plane velocity.
+        vlon = eph.coordinates.vlon.to_numpy(zero_copy_only=False)
+        vlat = eph.coordinates.vlat.to_numpy(zero_copy_only=False)
+        v_ra = vlon * cosd
+        speed = np.hypot(v_ra, vlat)
+        vgood = good & np.isfinite(speed) & (speed > 0)
+        if vgood.any():
+            ux = v_ra[vgood] / speed[vgood]
+            uy = vlat[vgood] / speed[vgood]
+            at = dra_as[vgood] * ux + ddec_as[vgood] * uy
+            ct = -dra_as[vgood] * uy + ddec_as[vgood] * ux
+            rec.resid_mean_at_arcsec = float(np.mean(at))
+            rec.resid_mean_ct_arcsec = float(np.mean(ct))
+            rec.resid_rms_at_arcsec = float(np.sqrt(np.mean(at ** 2)))
+            rec.resid_rms_ct_arcsec = float(np.sqrt(np.mean(ct ** 2)))
+        # EFCC18 coverage (fraction of obs with a non-zero EFCC18 correction).
+        cov_all = (np.abs(prepared.efcc18[:, 0]) > 0) | (np.abs(prepared.efcc18[:, 1]) > 0)
+        rec.efcc_frac_all = float(cov_all.mean())
+        cov_tr = (np.abs(efcc_train[:, 0]) > 0) | (np.abs(efcc_train[:, 1]) > 0)
+        rec.efcc_frac_train = float(cov_tr.mean()) if len(efcc_train) else float("nan")
     except Exception as e:
         rec.failure_reason = f"{type(e).__name__}: {e}\n{traceback.format_exc(limit=2)}"
     return rec

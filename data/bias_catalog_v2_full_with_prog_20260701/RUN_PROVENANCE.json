@@ -1,0 +1,52 @@
+{
+  "catalog_name": "v2_full_with_prog",
+  "catalog_date": "2026-07-01",
+  "bead": "54t",
+  "run_profile": "v2_full",
+  "group_by": ["stn", "prog", "band"],
+  "obstime_window": {"min": null, "max": null, "comment": "no time filter; full archive with prog populated"},
+  "prog_status": "POPULATED (12.3% globally, from fresh BQ fetch 2026-06-23 that included prog per bead 43z). Station 568 shows Tholen/Micheli-era split: prog '02'=228, '0U'=72, '0P'=24, '0J'=13, etc.",
+  "preprocessing": {
+    "efcc18_applied": true,
+    "efcc18_bias_dat_source": "data/efcc18/bias.parquet"
+  },
+  "cloud_run": {
+    "job_uid": "mpc-real-data-looo-withprog-20260630185507",
+    "image": "us-west1-docker.pkg.dev/moeyens-thor-dev/ai/mpc-real-data-looo:v2-full-fix-prog-20260629",
+    "image_digest": "sha256:203dbad7eaa8439d09f9c26f9a020719b4ce839fdc16fe6db75ed3c8e8f17663",
+    "namespace": "research-kat",
+    "queue": "cpu-spot",
+    "completions": 21,
+    "parallelism": 14,
+    "pod_failures_absorbed": 147,
+    "failed_indices": 0,
+    "supersedes": "The broken v2_full_with_prog run of 2026-06-26 (job mpc-real-data-looo-withprog-20260626152311) had program_code=0% due to stale mpcq 0.4.0 in the base image (fixed via explicit RUN pip install mpcq @ 42e447b in Dockerfile.production, commits bac6a3d + 0cd214b)."
+  },
+  "gcs": {
+    "input_prefix": "gs://exp-research/mpc-real-data-looo-v2-full-with-prog-20260624/input/",
+    "input_raw": "gs://exp-research/mpc-real-data-looo-v2-full-with-prog-20260624/input_raw/",
+    "output_prefix": "gs://exp-research/mpc-real-data-looo-v2-full-with-prog-20260624/output/",
+    "catalog_prefix": "gs://exp-research/mpc-real-data-looo-v2-full-with-prog-20260624/catalog/ (to be uploaded)"
+  },
+  "code_pins": {
+    "adam_orbit_det_eval_branch": "mpc-v2 (at tip when publish ran)",
+    "adam_core_pin": "e6f89108",
+    "adam_fo_pin": "b10b622",
+    "mpcq_pin": "42e447b (explicit RUN pip install; the fix for the 2026-06-26 broken run)"
+  },
+  "catalog_metrics": {
+    "n_residuals_pre_filter": 5679786,
+    "n_residuals_post_bias_filter": 5517437,
+    "n_objects_in_collect": 18782,
+    "n_observatories_with_stats": 1240,
+    "n_program_code_stats": 1645,
+    "n_bias_table_rows": 3325,
+    "n_observatory_rollup_rows": 2688,
+    "n_per_program_tuple_rows": 637
+  },
+  "sibling_catalogs": {
+    "v2_full_no_prog": "data/bias_catalog_v2_full_no_prog_20260622/ (same full-archive, prog null throughout)",
+    "v2_full_no_prog_pre_2017": "data/bias_catalog_v2_full_no_prog_pre_2017_20260624/",
+    "v2_full_no_prog_post_2017": "data/bias_catalog_v2_full_no_prog_post_2017_20260624/"
+  }
+}

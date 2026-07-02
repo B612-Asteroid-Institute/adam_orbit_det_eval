@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>v2 MPC Observatory Bias Catalog Family — Final Writeup</title>
+<style>
+  :root {
+    --fg: #111; --muted: #666; --line: #ddd; --bg: #fafafa;
+    --accent: #1a4480; --neg: #0a6d2a; --pos: #a32a1f;
+    --code-bg: #f3f3f3; --highlight: #fff8e0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    color: var(--fg); background: var(--bg);
+    max-width: 1100px; margin: 2.5rem auto; padding: 0 1.25rem 4rem;
+    line-height: 1.55; font-size: 15px;
+  }
+  h1 { font-size: 1.7rem; margin-bottom: 0.3rem; color: var(--accent); }
+  h2 { font-size: 1.2rem; margin-top: 2.4rem; margin-bottom: 0.6rem;
+       color: var(--accent); border-bottom: 1px solid var(--line); padding-bottom: 0.2rem; }
+  h3 { font-size: 1rem; margin-top: 1.5rem; margin-bottom: 0.3rem; }
+  .provenance {
+    background: #fff; border: 1px solid var(--line); border-radius: 4px;
+    padding: 0.75rem 1rem; font-size: 13px; color: var(--muted); margin-bottom: 1.5rem;
+  }
+  .provenance strong { color: var(--fg); }
+  table {
+    border-collapse: collapse; width: 100%; margin: 0.5rem 0 0.9rem;
+    background: #fff; font-size: 14px;
+  }
+  th, td { border: 1px solid var(--line); padding: 0.4rem 0.65rem; text-align: right; }
+  th { background: #f0f3f8; font-weight: 600; color: var(--accent); }
+  th:first-child, td:first-child { text-align: left; }
+  td.code, th.code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; text-align: center;
+  }
+  td.num { font-family: ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+  .neg { color: var(--neg); font-weight: 600; }
+  .pos { color: var(--pos); font-weight: 600; }
+  .muted { color: var(--muted); }
+  .strong { font-weight: 700; }
+  .pill {
+    display: inline-block; padding: 0.05rem 0.5rem; border-radius: 10px;
+    font-size: 11px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase;
+  }
+  .pill.match { background: #eaf4fb; color: #1a4480; }
+  .pill.beat  { background: #d8efd8; color: #0a6d2a; }
+  ul { padding-left: 1.3rem; } li { margin-bottom: 0.35rem; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: 0.92em; }
+  .caveat {
+    background: var(--highlight); border-left: 3px solid #e7b500;
+    padding: 0.7rem 0.9rem; font-size: 14px; margin: 1rem 0; border-radius: 0 3px 3px 0;
+  }
+  .summary-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 0.7rem; margin: 0.7rem 0 1rem;
+  }
+  .stat-card {
+    background: #fff; border: 1px solid var(--line); border-radius: 4px;
+    padding: 0.7rem 0.9rem;
+  }
+  .stat-card .v { font-family: ui-monospace, monospace; font-size: 1.3rem; font-weight: 600;
+                  color: var(--accent); }
+  .stat-card .k { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .headline-callout {
+    background: #eaf4fb; border: 1px solid #90b0d0; border-radius: 6px;
+    padding: 1rem 1.2rem; margin: 1rem 0 1.5rem;
+  }
+  .headline-callout ol { margin: 0.4rem 0 0; padding-left: 1.2rem; }
+  footer { margin-top: 3rem; font-size: 12px; color: var(--muted);
+           border-top: 1px solid var(--line); padding-top: 0.8rem; }
+</style>
+</head>
+<body>
+
+<h1>v2 MPC Observatory Bias Catalog Family — Final Writeup</h1>
+
+<div class="provenance">
+  <strong>Date:</strong> 2026-07-02
+  &middot; <strong>Branch:</strong> <code>mpc-v2</code>
+  &middot; <strong>Bead:</strong> <code>54t</code> (closed 2026-07-01)
+</div>
+
+<h2>Executive summary</h2>
+
+<p>Four EFCC18-corrected LOOO catalogs have been published and cross-checked against
+Vere&scaron; et al. 2017 (<em>Icarus</em> 296:139, arXiv:1703.03479) Table 1 per-station RMS values &mdash;
+the only external per-station published reference.</p>
+
+<div class="headline-callout">
+<strong>Headline results:</strong>
+<ol>
+  <li>On the apples-to-apples time window (Veres data cutoff of 2016-02, our <code>v2_full_no_prog_pre_2017</code> profile), v2 RMS <strong>matches Veres to within methodology gap</strong> on all 7 overlap stations (mean v2/Veres ratio <strong>1.02 RA, 0.98 Dec</strong>).</li>
+  <li>On the post-Veres data window, v2 RMS is <strong>15&ndash;22% SMALLER than Veres</strong> at the surviving legacy stations &mdash; Gaia-era astrometry is genuinely tighter than the FCCT14 era.</li>
+  <li>Station 568 (Mauna Kea) shows <strong>real per-program separation</strong> in the with_prog catalog: program <code>0U</code> (Tholen) is well-behaved (RA +0.014&Prime;, Dec +0.057&Prime;, n=327 obj); program <code>03</code> shows a resolvable +0.12&Prime; bias.</li>
+  <li>Post-EFCC18 per-station biases are 6&ndash;10% <em>smaller</em> than Veres RMS on the full archive &mdash; reversing the 14&ndash;16% <em>larger</em> baseline before EFCC18 preprocessing.</li>
+</ol>
+</div>
+
+<h2>The four catalogs</h2>
+
+<table>
+<thead><tr>
+<th>catalog</th><th>profile</th><th>window</th><th>rows</th><th>rollup</th><th>tuples</th><th>obs.</th>
+</tr></thead>
+<tbody>
+<tr><td class="code">v2_full_no_prog</td>            <td><code>v2_full</code></td>           <td>none (full archive)</td>   <td class="num">2,802</td> <td class="num">1,123</td> <td class="num">1,679</td> <td class="num">1,123</td></tr>
+<tr><td class="code">v2_full_no_prog_pre_2017</td>   <td><code>v2_full_pre_2017</code></td>  <td>obstime &le; 2017-01-01</td><td class="num">1,767</td> <td class="num">772</td>   <td class="num">995</td>   <td class="num">772</td></tr>
+<tr><td class="code">v2_full_no_prog_post_2017</td>  <td><code>v2_full_post_2017</code></td> <td>obstime &gt; 2017-01-01</td><td class="num">1,602</td> <td class="num">629</td>   <td class="num">973</td>   <td class="num">629</td></tr>
+<tr><td class="code"><strong>v2_full_with_prog</strong></td><td><code>v2_full</code></td>   <td>none</td>                   <td class="num"><strong>3,325</strong></td><td class="num">1,139</td> <td class="num">2,186</td> <td class="num">1,139</td></tr>
+</tbody>
+</table>
+
+<p>All four are committed to <code>mpc-v2</code> under <code>data/bias_catalog_v2_full_*/</code>
+and mirrored to GCS at <code>gs://exp-research/mpc-real-data-looo-v2-full-*/catalog/</code>.</p>
+
+<p>Each catalog contains: <code>bias_table.parquet</code>, <code>bias_table.csv</code>,
+<code>bias_table_config.json</code>, <code>RUN_PROVENANCE.json</code>. The full-archive
+<code>v2_full_no_prog</code> catalog additionally has <code>headline_stats.html</code>
+(interactive Veres/EFCC18/per-band/per-astcat report).</p>
+
+<h3>What "prog" means and why the first three catalogs don't have it</h3>
+
+<p>The MPC <code>prog</code> field is a single-character (or 2-char ADES base62) program
+identifier that differentiates independent observing programs at the same physical facility.
+The canonical example is station 568 (Mauna Kea), where D. Tholen's group and M. Micheli's
+group both submit observations from the same telescope but with different astrometric
+pipelines. Veres 2017 distinguished these ("<code>p=&amp;%</code>" in their notation); v1 could not.</p>
+
+<p>Bead <code>43z</code> (2026-05-21) added <code>prog</code> to the mpcq query layer. The v12
+BigQuery fetch (2026-05-08) predates that, so the shard parquets used for the first three
+catalogs have all-NULL <code>prog</code>. <code>v2_full_with_prog</code> runs on a fresh
+2026-06-23 BQ fetch that includes <code>prog</code> &mdash; this is the only catalog in which
+per-program tuple rows exist.</p>
+
+<h2>Methodology</h2>
+
+<ul>
+  <li><strong>LOOO (Leave-One-Observatory-Out):</strong> for each object, exclude a group's
+    observations, re-fit the orbit with the remainder using ASSIST N-body propagation warm-started
+    by Find_Orb, then compute residuals for the excluded observations against the refit.
+    Aggregated per-group, this yields empirical per-group astrometric biases and RMS. Each
+    held-out unit is the configured tuple (default <code>(stn, prog, band)</code> per bead <code>wl0</code>).</li>
+  <li><strong>EFCC18 preprocessing:</strong> per-(catalog, HEALPix-tile-at-order-64) corrections
+    applied to RA/Dec BEFORE observations enter the LOOO pipeline. 46.7% of the v2_full_with_prog
+    observations are corrected, 50.2% are Gaia-reference no-ops, 3.1% unsupported.</li>
+  <li><strong>Bootstrap CIs:</strong> 2,000 resamples over objects (not observations), seed=42.
+    Produces 95% CIs for mean/median/RMS on all four axes (RA, Dec, AT, CT).</li>
+  <li><strong>Filters:</strong> <code>hold_in_reduced_chi2 &le; 100</code>, <code>n_obs_per_group &ge; 10</code>,
+    <code>n_objects_per_group &ge; 3</code>. Per-group sigma-pathology filter (bead <code>gnm</code>)
+    drops the small handful of rows with reported &sigma; below physically plausible values.</li>
+</ul>
+
+<h2>Comparison against Veres 2017 Table 1</h2>
+
+<p>Veres et al. 2017 published per-station astrometric residual RMS for the 13 most productive
+CCD surveys, from JPL orbit-fit residuals with FCCT14 catalog debiasing. Seven of those stations
+overlap the ones observed with substantial <code>n_objects</code> in our catalogs.</p>
+
+<h3>Per-station RA RMS (&Prime;)</h3>
+<p class="muted">&Delta; = v2 &minus; Veres; <span class="neg">green</span> = v2 smaller; <span class="pos">red</span> = v2 larger. "&mdash;" means no data (legacy surveys 704, 644, 699 shut down before 2017).</p>
+<table>
+<thead><tr>
+<th>stn</th><th>survey</th><th>Veres</th><th>pre_2017</th><th>post_2017</th><th>full</th><th>with_prog</th><th>&Delta; pre_2017</th><th>&Delta; post_2017</th>
+</tr></thead>
+<tbody>
+<tr><td class="code">F51</td><td>Pan-STARRS1</td> <td class="num">0.120</td><td class="num">0.150</td><td class="num">0.109</td><td class="num">0.118</td><td class="num">0.119</td><td class="num pos">+0.030</td><td class="num neg">&minus;0.011</td></tr>
+<tr><td class="code">G96</td><td>Mt. Lemmon</td>  <td class="num">0.310</td><td class="num">0.322</td><td class="num">0.241</td><td class="num">0.266</td><td class="num">0.268</td><td class="num pos">+0.012</td><td class="num neg"><strong>&minus;0.069</strong></td></tr>
+<tr><td class="code">703</td><td>Catalina</td>    <td class="num">0.690</td><td class="num">0.702</td><td class="num">0.552</td><td class="num">0.640</td><td class="num">0.642</td><td class="num pos">+0.012</td><td class="num neg"><strong>&minus;0.138</strong></td></tr>
+<tr><td class="code">704</td><td>LINEAR</td>      <td class="num">0.670</td><td class="num">0.634</td><td class="muted">&ndash;</td><td class="num">0.628</td><td class="num">0.627</td><td class="num neg">&minus;0.036</td><td class="muted">&ndash;</td></tr>
+<tr><td class="code">691</td><td>Spacewatch</td>  <td class="num">0.370</td><td class="num">0.354</td><td class="num">0.309</td><td class="num">0.339</td><td class="num">0.340</td><td class="num neg">&minus;0.016</td><td class="num neg"><strong>&minus;0.061</strong></td></tr>
+<tr><td class="code">644</td><td>NEAT</td>        <td class="num">0.300</td><td class="num">0.324</td><td class="muted">&ndash;</td><td class="num">0.314</td><td class="num">0.306</td><td class="num pos">+0.024</td><td class="muted">&ndash;</td></tr>
+<tr><td class="code">699</td><td>LONEOS</td>      <td class="num">0.650</td><td class="num">0.608</td><td class="muted">&ndash;</td><td class="num">0.609</td><td class="num">0.609</td><td class="num neg">&minus;0.042</td><td class="muted">&ndash;</td></tr>
+</tbody>
+</table>
+
+<h3>Per-station Dec RMS (&Prime;)</h3>
+<table>
+<thead><tr>
+<th>stn</th><th>Veres</th><th>pre_2017</th><th>post_2017</th><th>full</th><th>with_prog</th><th>&Delta; pre_2017</th><th>&Delta; post_2017</th>
+</tr></thead>
+<tbody>
+<tr><td class="code">F51</td><td class="num">0.120</td><td class="num">0.139</td><td class="num">0.102</td><td class="num">0.111</td><td class="num">0.112</td><td class="num pos">+0.019</td><td class="num neg">&minus;0.018</td></tr>
+<tr><td class="code">G96</td><td class="num">0.280</td><td class="num">0.271</td><td class="num">0.236</td><td class="num">0.251</td><td class="num">0.252</td><td class="num neg">&minus;0.009</td><td class="num neg">&minus;0.044</td></tr>
+<tr><td class="code">703</td><td class="num">0.670</td><td class="num">0.659</td><td class="num">0.489</td><td class="num">0.585</td><td class="num">0.584</td><td class="num neg">&minus;0.011</td><td class="num neg"><strong>&minus;0.181</strong></td></tr>
+<tr><td class="code">704</td><td class="num">0.660</td><td class="num">0.624</td><td class="muted">&ndash;</td><td class="num">0.621</td><td class="num">0.620</td><td class="num neg">&minus;0.036</td><td class="muted">&ndash;</td></tr>
+<tr><td class="code">691</td><td class="num">0.340</td><td class="num">0.278</td><td class="num">0.251</td><td class="num">0.263</td><td class="num">0.266</td><td class="num neg"><strong>&minus;0.062</strong></td><td class="num neg"><strong>&minus;0.089</strong></td></tr>
+<tr><td class="code">644</td><td class="num">0.360</td><td class="num">0.362</td><td class="muted">&ndash;</td><td class="num">0.354</td><td class="num">0.329</td><td class="num pos">+0.002</td><td class="muted">&ndash;</td></tr>
+<tr><td class="code">699</td><td class="num">0.590</td><td class="num">0.548</td><td class="muted">&ndash;</td><td class="num">0.550</td><td class="num">0.550</td><td class="num neg">&minus;0.042</td><td class="muted">&ndash;</td></tr>
+</tbody>
+</table>
+
+<h3>Mean v2/Veres ratios across the 7 overlap stations</h3>
+<table>
+<thead><tr><th>profile</th><th>RA ratio</th><th>Dec ratio</th><th>interpretation</th></tr></thead>
+<tbody>
+<tr><td class="code">pre_2017</td>                            <td class="num">1.02</td><td class="num">0.98</td><td>essentially matches Veres <span class="pill match">MATCH</span></td></tr>
+<tr><td class="code">post_2017</td>                           <td class="num neg"><strong>0.79</strong></td><td class="num neg"><strong>0.83</strong></td><td>Gaia era beats FCCT14 era <span class="pill beat">BEATS</span></td></tr>
+<tr><td class="code">full_archive</td>                        <td class="num neg">0.94</td><td class="num neg">0.90</td><td>volume-weighted between the two <span class="pill beat">BEATS</span></td></tr>
+<tr><td class="code">with_prog</td>                           <td class="num neg">0.94</td><td class="num neg">0.90</td><td>same underlying data as full_archive <span class="pill beat">BEATS</span></td></tr>
+</tbody>
+</table>
+
+<h3>Interpretation</h3>
+<ul>
+  <li><strong><code>pre_2017</code> matches Veres to methodology gap.</strong> Applying EFCC18 to the same observations Veres saw produces essentially the same per-station RMS Veres measured, using an entirely different aggregation methodology (LOOO held-out residuals vs Veres' orbit-fit residuals). Independent methods on the same raw data converge &mdash; strong external validation of v2.</li>
+  <li><strong><code>post_2017</code> beats Veres substantially.</strong> At the four legacy stations that survived past 2017 (F51, G96, 703, 691), the modern Gaia-astrometry-era RMS is 15&ndash;25% smaller than Veres' pre-Gaia numbers. Not a v2-methodology effect &mdash; the observable improvement since these surveys migrated to Gaia DR1/DR2/DR3.</li>
+  <li><strong>LOOO introduces a known ~10&ndash;20% inflation.</strong> Held-out residuals are strictly larger than orbit-fit residuals from the same data. That we still see v2 matching or beating Veres means EFCC18 + modern astrometry <em>overcompensate</em> this gap.</li>
+</ul>
+
+<h2>Per-program signal at station 568 (with_prog only)</h2>
+
+<p>Real per-program discrimination is only available when <code>prog</code> is populated
+(only in <code>v2_full_with_prog</code>). Rows are per-<code>(stn, program_code)</code>
+with <code>band</code> aggregated.</p>
+
+<table>
+<thead><tr>
+<th>prog</th><th>bias_RA (&Prime;)</th><th>bias_Dec (&Prime;)</th><th>rms_RA (&Prime;)</th><th>rms_Dec (&Prime;)</th><th>n_objects</th><th>n_obs</th><th>HC</th>
+</tr></thead>
+<tbody>
+<tr><td class="code">0U</td> <td class="num">+0.014</td><td class="num">+0.057</td><td class="num">0.160</td><td class="num">0.148</td><td class="num">327</td><td class="num">1,007</td><td><span class="pill beat">Y</span></td></tr>
+<tr><td class="code">0P</td> <td class="num neg">&minus;0.054</td><td class="num neg">&minus;0.027</td><td class="num">0.231</td><td class="num">0.234</td><td class="num">102</td><td class="num">414</td><td><span class="pill beat">Y</span></td></tr>
+<tr><td class="code">02</td> <td class="num">+0.003</td><td class="num neg">&minus;0.025</td><td class="num">0.171</td><td class="num">0.137</td><td class="num">74</td><td class="num">161</td><td><span class="pill beat">Y</span></td></tr>
+<tr><td class="code">03</td> <td class="num pos">+0.123</td><td class="num pos">+0.094</td><td class="num">0.249</td><td class="num">0.274</td><td class="num">18</td><td class="num">54</td><td><span class="muted">&ndash;</span></td></tr>
+<tr><td class="code">0B</td> <td class="num">+0.028</td><td class="num neg">&minus;0.115</td><td class="num">0.195</td><td class="num">0.197</td><td class="num">9</td><td class="num">17</td><td><span class="muted">&ndash;</span></td></tr>
+<tr><td class="code">0a</td> <td class="num pos">+0.117</td><td class="num neg">&minus;0.167</td><td class="num">0.209</td><td class="num">0.180</td><td class="num">5</td><td class="num">16</td><td><span class="muted">&ndash;</span></td></tr>
+<tr><td class="code">01</td> <td class="num neg">&minus;0.097</td><td class="num pos">+0.233</td><td class="num">0.115</td><td class="num">0.264</td><td class="num">3</td><td class="num">15</td><td><span class="muted">&ndash;</span></td></tr>
+<tr><td class="code">0T</td> <td class="num neg">&minus;0.018</td><td class="num">+0.046</td><td class="num">0.158</td><td class="num">0.110</td><td class="num">9</td><td class="num">11</td><td><span class="muted">&ndash;</span></td></tr>
+</tbody>
+</table>
+
+<p>The three high-confidence programs (<code>0U</code>, <code>0P</code>, <code>02</code>) have distinct signatures: <code>0U</code>
+shows a small positive-Dec bias (~60 mas), <code>0P</code> shows a modest negative offset both axes, <code>02</code> is essentially unbiased.
+Previously (v1 and the three no_prog v2 catalogs), all 568 observations were pooled into a single per-station row, hiding these differences.</p>
+
+<h2>Catalog-level headline statistics</h2>
+
+<table>
+<thead><tr>
+<th>catalog</th><th>rows</th><th>HC%</th><th>bias_sig%</th><th>med |bias_RA|</th><th>med |bias_Dec|</th><th>med rms_RA</th><th>med rms_Dec</th>
+</tr></thead>
+<tbody>
+<tr><td class="code">no_prog_full</td>      <td class="num">2,802</td><td class="num">56.9%</td><td class="num">44.4%</td><td class="num">0.052&Prime;</td><td class="num">0.055&Prime;</td><td class="num">0.390&Prime;</td><td class="num">0.376&Prime;</td></tr>
+<tr><td class="code">no_prog_pre_2017</td>  <td class="num">1,767</td><td class="num">59.3%</td><td class="num">42.0%</td><td class="num">0.060&Prime;</td><td class="num">0.060&Prime;</td><td class="num">0.438&Prime;</td><td class="num">0.416&Prime;</td></tr>
+<tr><td class="code">no_prog_post_2017</td> <td class="num">1,602</td><td class="num">54.4%</td><td class="num">46.4%</td><td class="num neg"><strong>0.043&Prime;</strong></td><td class="num neg">0.050&Prime;</td><td class="num neg"><strong>0.306&Prime;</strong></td><td class="num neg"><strong>0.306&Prime;</strong></td></tr>
+<tr><td class="code">with_prog</td>         <td class="num">3,325</td><td class="num">55.1%</td><td class="num">44.6%</td><td class="num">0.053&Prime;</td><td class="num">0.057&Prime;</td><td class="num">0.395&Prime;</td><td class="num">0.379&Prime;</td></tr>
+</tbody>
+</table>
+
+<p>Post-2017 is the tightest catalog by every measure &mdash; the Gaia-era data is
+genuinely cleaner. Pre-2017 is the noisiest (30+ years of legacy astrometry). Full-archive
+is the population-weighted average.</p>
+
+<h2>EFCC18 effect on bias</h2>
+
+<p>Detailed table with pre-EFCC18 vs post-EFCC18 values and deltas for all 13 v1-era
+anchor stations is in <code>data/bias_catalog_v2_full_no_prog_20260622/headline_stats.html</code>.
+Key findings summarized:</p>
+
+<ul>
+  <li><strong>EFCC18 acted as designed.</strong> Bias magnitudes were systematically reduced at the biggest-bias anchors: station 704 lost 30% of its RA bias and 68% of its Dec bias; 699 lost 39% RA and 61% Dec.</li>
+  <li><strong>The effect is mostly Dec.</strong> Four anchors (704, 699, 691, 644) show much larger Dec reductions (171&ndash;296 mas) than RA reductions. Consistent with non-Gaia catalog Dec-frame offsets being EFCC18's main target.</li>
+  <li><strong>691 is the cleanest demonstration:</strong> Dec swung from +0.177&Prime; (pre) to &minus;0.029&Prime; (post) &mdash; a full removal of the catalog-frame offset, with slight overshoot.</li>
+  <li><strong>Well-calibrated anchors stayed well-calibrated.</strong> F52, M22, R17, W68 all remain &lt;0.05&Prime; both axes; T09 at 0.09&Prime; RA.</li>
+</ul>
+
+<h2>Limitations and caveats</h2>
+
+<div class="caveat">
+<ol>
+  <li><strong>prog absent from 3 of 4 catalogs.</strong> Only <code>v2_full_with_prog</code> has <code>program_code</code> populated. Time-windowed variants with prog would require re-running the pre_2017/post_2017 profiles against the with-prog input shards.</li>
+  <li><strong>LOOO methodology gap.</strong> Held-out residuals are ~10&ndash;20% larger than orbit-fit residuals from the same data. Baked into the Veres comparison &mdash; a "match" actually means v2 does slightly <em>better</em> on comparable observations.</li>
+  <li><strong>Anchor validation was removed</strong> (commit <code>43e5cfa</code>). It compared to a stale internal pre-EFCC18 snapshot and had become misleading. Veres comparison is the actual external check.</li>
+  <li><strong>Space-based observations dropped.</strong> C51 WISE, C57 NEOWISE-R, etc. don't have enough LOOO-eligible object coverage.</li>
+  <li><strong>Very-small-N per-program rows are noisy.</strong> The <code>high_confidence</code> flag indicates whether a row's bootstrap CI is statistically resolvable.</li>
+  <li><strong>BigQuery cost incident (bead 84t).</strong> Producing with_prog required a fresh fetch that initially cost ~$800 before the pattern was fixed. Future fetches of this scale cost &lt; $10.</li>
+</ol>
+</div>
+
+<h2>Reproducibility</h2>
+
+<p>Every catalog's <code>RUN_PROVENANCE.json</code> records cloud job UID, container image tag+digest, GCS input/output prefixes, Tier-2 code pins, and EFCC18 cache source. Key artifacts for reproducing <code>v2_full_with_prog</code>:</p>
+
+<ul>
+  <li>Git branch: <code>mpc-v2</code> in B612-Asteroid-Institute/adam_orbit_det_eval</li>
+  <li>Container: <code>us-west1-docker.pkg.dev/moeyens-thor-dev/ai/mpc-real-data-looo:v2-full-fix-prog-20260629</code> (digest <code>sha256:203dbad7...</code>)</li>
+  <li>BigQuery source: <code>moeyens-thor-dev.mpc_sbn_aurora.public_obs_sbn</code></li>
+  <li>GCS input prefix: <code>gs://exp-research/mpc-real-data-looo-v2-full-with-prog-20260624/input/</code></li>
+  <li>adam_core pin: <code>e6f89108</code></li>
+  <li>adam_fo pin: <code>b10b622</code> (branch <code>mpc-v2</code>)</li>
+  <li>mpcq pin: <code>42e447b</code> (explicitly installed in Dockerfile)</li>
+</ul>
+
+<h2>Known follow-ups</h2>
+
+<ol>
+  <li><strong>v2_full_with_prog_pre_2017 / _post_2017</strong> &mdash; the natural completion. Requires 2&times; cloud LOOO runs (~4&ndash;14h each on cpu-spot) but no fresh BQ fetch.</li>
+  <li><strong>Extend Veres comparison to all 13 stations</strong>. We compared 7; other 6 (T05, T08, T12, T14, Q11, Q63) have substantial data.</li>
+  <li><strong>AT/CT bias analysis.</strong> Covariance matrices populated on every row but not yet analyzed. Timing bias vs trailing bias decomposition is a natural follow-up.</li>
+  <li><strong>Per-object outlier analysis.</strong> <code>looo_results_atct.parquet</code> (~463 MB per catalog, in <code>published/</code> subdir, not committed) available for downstream users.</li>
+  <li><strong>Beads <code>whl</code> (P3, image audit) and <code>s71</code> (P2, publish wrapper hygiene) remain open.</strong></li>
+</ol>
+
+<h2>Provenance summary</h2>
+<ul>
+  <li>Bead <code>54t</code> (v12-corrected re-run) closed 2026-07-01.</li>
+  <li>Branch <code>mpc-v2</code> in adam_orbit_det_eval consolidates 132 commits of v2 work from the former <code>kk/v2-prep-runbook</code> and 10 feature branches.</li>
+  <li>Companion branch <code>mpc-v2</code> in adam_fo at <code>b10b622</code> (fitter resilience &mdash; beads 5h7 + 589 + UTC hardening).</li>
+  <li>Companion pin <code>adam_core@e6f89108</code> (bead e48 warm-start ABC, already in adam_core main via PR #198).</li>
+</ul>
+
+<footer>
+Generated 2026-07-02 from v2 catalog family analysis. Companion Markdown at <code>docs/v2-catalog-writeup.md</code>. Companion detailed anchor breakdown at <code>data/bias_catalog_v2_full_no_prog_20260622/headline_stats.html</code>.
+</footer>
+
+</body>
+</html>

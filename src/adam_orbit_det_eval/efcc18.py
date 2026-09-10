@@ -4,7 +4,7 @@ Implements the per-observation correction described in Eggl, Farnocchia,
 Chamberlin & Chesley (2020) "An observational reference frame for
 astrometric asteroid surveys", Icarus 339:113596. The published table
 (``bias.dat``) covers 26 catalogs over a HEALPix tessellation of the sky
-(``N_side = 64`` → 49152 tiles). Each (tile, catalog) cell stores four
+(``N_side = 64`` → 49152 tiles, RING ordering). Each (tile, catalog) cell stores four
 int-encoded numbers: position correction in RA·cos(Dec) at J2000 [arcsec],
 position correction in Dec at J2000 [arcsec], proper-motion correction in
 RA·cos(Dec) [mas/yr], proper-motion correction in Dec [mas/yr].
@@ -165,14 +165,21 @@ def load_efcc18_biases(
 
 
 def _ra_dec_to_healpix(ra_deg: np.ndarray, dec_deg: np.ndarray) -> np.ndarray:
-    """Vectorised (RA, Dec) → HEALPix tile index at N_side=64, nested order.
+    """Vectorised (RA, Dec) → HEALPix tile index at N_side=64, RING order.
 
-    Matches Find_Orb's xy_to_healpix convention: nested ordering, J2000
-    equatorial frame.
+    The k-th data row of ``bias.dat`` is HEALPix RING pixel k: the JPL
+    archive's ``tiles.dat`` (rows "sorted in the same way" as bias.dat per its
+    README) lists ring-scheme pixel centres for all 49152 tiles, and Find_Orb
+    reads the table in ring order (bias.cpp / healpix.cpp). Until 2026-09-10
+    this function used ``nest=True`` — a correction of the right magnitude
+    from an unrelated tile — so every EFCC18 result computed through this
+    module before then must be redone (same bug and evidence as adam_core
+    d56114ac, kk/efcc18-ring-order; the two implementations now agree to
+    1e-4 mas on the walk-forward study's 100 objects).
     """
     theta = np.deg2rad(90.0 - dec_deg)  # colatitude
     phi = np.deg2rad(ra_deg)
-    return hp.ang2pix(EFCC18_NSIDE, theta, phi, nest=True)
+    return hp.ang2pix(EFCC18_NSIDE, theta, phi, nest=False)
 
 
 def compute_efcc18_corrections(

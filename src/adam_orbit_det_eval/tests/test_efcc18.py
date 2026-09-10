@@ -141,7 +141,7 @@ def test_compute_efcc18_corrections_pm_term(tmp_path: Path) -> None:
     # Find the (RA, Dec) center of tile 0 by inverting the HEALPix mapping.
     import healpy as hp
 
-    theta_center, phi_center = hp.pix2ang(64, 0, nest=True)
+    theta_center, phi_center = hp.pix2ang(64, 0, nest=False)  # bias.dat rows are RING-ordered
     dec = float(90.0 - np.rad2deg(theta_center))
     ra = float(np.rad2deg(phi_center))
     assert int(_ra_dec_to_healpix(np.array([ra]), np.array([dec]))[0]) == 0
@@ -159,3 +159,19 @@ def test_n_observations_covered() -> None:
     assert n_observations_covered(["UCAC4", "Gaia2", "Gaia3", "USNOA2"]) == 2
     assert n_observations_covered(["Gaia2", "Gaia3", None]) == 0
     assert n_observations_covered([]) == 0
+
+
+def test_tile_ordering_is_ring() -> None:
+    """Pin the row order of bias.dat: tile centres from JPL's tiles.dat (tile,
+    RA rad, Dec rad) map back to their own index under the RING scheme, and
+    not under the nested scheme (the pre-2026-09-10 bug)."""
+    import healpy as hp
+
+    anchors = [(0, 0.785398, 1.558038), (4096, 4.764749, 0.988506),
+               (24576, 3.153864, 0.000000), (49151, 5.497787, -1.558038)]
+    for tile, ra_rad, dec_rad in anchors:
+        ra = np.array([np.rad2deg(ra_rad)]); dec = np.array([np.rad2deg(dec_rad)])
+        assert int(_ra_dec_to_healpix(ra, dec)[0]) == tile
+    nested = [int(hp.ang2pix(64, np.deg2rad(90 - np.rad2deg(d)), r, nest=True))
+              for _, r, d in anchors]
+    assert sum(n == a[0] for n, a in zip(nested, anchors)) < len(anchors)

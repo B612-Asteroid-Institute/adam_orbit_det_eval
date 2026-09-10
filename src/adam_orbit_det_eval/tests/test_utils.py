@@ -33,6 +33,10 @@ def test_mpc_to_od_observations() -> None:
     # Keep NaNs, use actual RMS where available
     od_nans = mpc_to_od_observations(mpc, prevent_nans=False)
     assert len(od_nans) == len(mpc)
+    # The star catalog must ride along verbatim, row for row: adam_core's
+    # catalog-aware models (EFCC18 debias, Veres sigmas) key on it and treat
+    # null as "unknown catalog" (pass-through).
+    assert od_nans.astcat.to_pylist() == mpc.astcat.to_pylist()
     # Only looking at ra and dec sigmas for nans, they should be for the same records as MPC
     od_valid_var_mask = pc.invert(
         np.any(np.isnan(od_nans.coordinates.covariance.sigmas[:, 1:3]), axis=1)
@@ -966,3 +970,15 @@ def test_mpc_to_od_observations_sigma_model_veres2017_fills_missing() -> None:
     # At dec=0, cos(dec)=1 so the cos(dec) factor is a no-op.
     np.testing.assert_allclose(sigmas_deg[0, 1] * 3600.0, 0.18, rtol=1e-10)
     np.testing.assert_allclose(sigmas_deg[0, 2] * 3600.0, 0.18, rtol=1e-10)
+
+
+def test_mpc_to_od_observations_carries_astcat() -> None:
+    """Regression for the silent-no-op hazard: the converter used to drop
+    ``astcat``, so EFCC18DebiasModel did nothing and the Veres models fell
+    back to 0.75" for every observation."""
+    mpc = _make_synthetic_obs(ra_deg=10.0, dec_deg=20.0, stn="F51")
+    od = mpc_to_od_observations(mpc)
+    assert od is not None
+    assert "astcat" in od.table.column_names
+    assert od.astcat.to_pylist() == ["UCAC4"]
+    assert od.astcat.null_count == 0

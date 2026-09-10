@@ -13,6 +13,15 @@ from adam_core.orbit_determination.evaluate import (
 from mpc_obscodes import mpc_obscodes
 from mpcq import MPCObservations
 
+# adam_core >= kk/obs-uncertainty-interface@9acc2e58 carries the star catalog
+# on OrbitDeterminationObservations as a top-level nullable ``astcat`` column.
+# Catalog-aware models there (EFCC18DebiasModel, VeresFloorModel,
+# VeresReplaceModel) key on it and treat null as "catalog unknown" = pass
+# through, so a converter that drops it turns every such model into a silent
+# no-op. Older adam_core releases have no such column; we only populate it
+# when the installed schema has it.
+_OD_OBSERVATIONS_HAVE_ASTCAT = "astcat" in OrbitDeterminationObservations.schema.names
+
 
 # ---------------------------------------------------------------------------
 # Veres et al. 2017 (Icarus 296, 139-149) astrometric uncertainty model.
@@ -787,12 +796,23 @@ def mpc_to_od_observations(
         band=obs_set.band,
     )
 
-    od_observations = OrbitDeterminationObservations.from_kwargs(
+    od_kwargs = dict(
         id=obs_set.obsid.to_numpy(zero_copy_only=False),
         coordinates=coords,
         observers=observers,
         photometry=photometry,
     )
+    if _OD_OBSERVATIONS_HAVE_ASTCAT:
+        # Carry the MPC astCat code verbatim (row order preserved) so
+        # adam_core's catalog-aware observation models can key on it.
+        od_kwargs["astcat"] = obs_set.astcat
+    else:
+        print(
+            "WARNING: this adam_core has no OrbitDeterminationObservations.astcat "
+            "column; catalog-aware observation models will pass every "
+            "observation through unchanged"
+        )
+    od_observations = OrbitDeterminationObservations.from_kwargs(**od_kwargs)
     return od_observations
 
 

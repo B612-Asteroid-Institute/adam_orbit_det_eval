@@ -123,6 +123,82 @@ def get_veres2017_sigma(
     return (VERES2017_FALLBACK_SIGMA, VERES2017_FALLBACK_SIGMA)
 
 
+# ---------------------------------------------------------------------------
+# Study-derived sigma fill-in (Asteroid Institute MPC bias study, v2 LOOO
+# residuals). Same role and same lookup shape as the Veres 2017 block above:
+# per-(station, catalog) -> per-station -> per-catalog -> global, used ONLY
+# where the MPC reports no sigma. Table + provenance:
+# adam_orbit_det_eval/data/v2_sigma_fill.{csv,PROVENANCE.md}. Override the
+# file with ADAM_EVAL_V2_SIGMA_TABLE.
+# ---------------------------------------------------------------------------
+_V2_SIGMA_TABLE: Optional[Dict[str, Dict]] = None
+
+
+def load_v2_sigma_table(path: Optional[str] = None) -> Dict[str, Dict]:
+    """Load (and cache) the v2 RMS fill-in table as lookup dicts.
+
+    Returns ``{"stn_astcat": {(stn, astcat): (ra, dec)}, "stn": {stn: (ra, dec)},
+    "astcat": {astcat: (ra, dec)}, "global": (ra, dec), "path": str}``.
+    """
+    global _V2_SIGMA_TABLE
+    if _V2_SIGMA_TABLE is not None and path is None:
+        return _V2_SIGMA_TABLE
+    import csv
+    import os
+
+    path = path or os.environ.get("ADAM_EVAL_V2_SIGMA_TABLE") or os.path.join(
+        os.path.dirname(__file__), "data", "v2_sigma_fill.csv"
+    )
+    table: Dict[str, Dict] = {"stn_astcat": {}, "stn": {}, "astcat": {}, "global": None, "path": path}
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            val = (float(row["rms_ra_arcsec"]), float(row["rms_dec_arcsec"]))
+            lvl = row["level"]
+            if lvl == "stn_astcat":
+                table["stn_astcat"][(row["stn"], row["astcat"])] = val
+            elif lvl == "stn":
+                table["stn"][row["stn"]] = val
+            elif lvl == "astcat":
+                table["astcat"][row["astcat"]] = val
+            elif lvl == "global":
+                table["global"] = val
+    if table["global"] is None:
+        raise ValueError(f"v2 sigma table {path} has no global row")
+    if path == (os.environ.get("ADAM_EVAL_V2_SIGMA_TABLE") or os.path.join(
+            os.path.dirname(__file__), "data", "v2_sigma_fill.csv")):
+        _V2_SIGMA_TABLE = table
+    return table
+
+
+def get_v2rms_sigma(
+    stn: Optional[str], astcat: Optional[str]
+) -> Tuple[float, float]:
+    """Return (sigma_ra_arcsec, sigma_dec_arcsec) for (stn, astcat) from the
+    study-derived v2 RMS table — the drop-in counterpart of
+    :func:`get_veres2017_sigma`.
+
+    Lookup order:
+      1. Per-(stn, catalog) RMS (high-confidence station, >= 30 residuals)
+      2. Per-station RMS (every high-confidence station)
+      3. Per-catalog default (all high-confidence stations)
+      4. Global default (all high-confidence residuals)
+    """
+    t = load_v2_sigma_table()
+    if stn and astcat:
+        v = t["stn_astcat"].get((stn, astcat))
+        if v:
+            return v
+    if stn:
+        v = t["stn"].get(stn)
+        if v:
+            return v
+    if astcat:
+        v = t["astcat"].get(astcat)
+        if v:
+            return v
+    return t["global"]
+
+
 def get_spacebased_stns() -> List[str]:
     """Return all known STN codes without fixed Earth coordinates"""
     with open(mpc_obscodes) as mpc_file:
@@ -170,6 +246,11 @@ def mpc_to_od_observations(
       How to fill missing/non-finite ``rmsra``/``rmsdec``:
         ``'const'``     — leave the missing rows as NaN and let ``prevent_nans``/
                           ``diag_nan`` substitute a tiny constant (legacy behavior).
+        ``'v2_rms'``    — fill missing sigmas via ``get_v2rms_sigma(stn, astcat)``
+                          (Asteroid Institute v2 LOOO study RMS: per-(stn, catalog)
+                          for high-confidence stations, then per-station, per-catalog,
+                          global; see data/v2_sigma_fill.PROVENANCE.md). Observations
+                          with finite MPC sigmas are untouched.
         ``'veres2017'`` — fill missing sigmas via ``get_veres2017_sigma(stn, astcat)``
                           (per-catalog defaults + per-(stn, catalog) overrides from
                           Veres et al. 2017 Table 1). Observations with finite MPC
@@ -408,6 +489,26 @@ def mpc_to_od_observations(
             )
             if ra_bad or dec_bad:
                 v_ra, v_dec = get_veres2017_sigma(stns_list[i], astcats_list[i])
+                if ra_bad:
+                    sigma_ra_cosdec_arcsec[i] = v_ra
+                if dec_bad:
+                    sigma_dec_arcsec[i] = v_dec
+    elif sigma_model == "v2_rms":
+        # Same rule as 'veres2017' with the study-derived per-(stn, catalog)
+        # RMS lookup (get_v2rms_sigma): fill only missing / non-positive MPC
+        # sigmas; finite MPC sigmas are kept.
+        stns_list = obs_set.stn.to_pylist()
+        astcats_list = obs_set.astcat.to_pylist()
+        for i in range(len(obs_set)):
+            ra_bad = (
+                not np.isfinite(sigma_ra_cosdec_arcsec[i])
+                or sigma_ra_cosdec_arcsec[i] <= 0
+            )
+            dec_bad = (
+                not np.isfinite(sigma_dec_arcsec[i]) or sigma_dec_arcsec[i] <= 0
+            )
+            if ra_bad or dec_bad:
+                v_ra, v_dec = get_v2rms_sigma(stns_list[i], astcats_list[i])
                 if ra_bad:
                     sigma_ra_cosdec_arcsec[i] = v_ra
                 if dec_bad:

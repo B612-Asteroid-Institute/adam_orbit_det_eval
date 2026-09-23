@@ -243,7 +243,11 @@ def mpc_to_od_observations(
       convention). How it is applied is controlled by ``bias_application``.
       Stations absent from the table pass through unchanged.
     sigma_model: str, default 'const'
-      How to fill missing/non-finite ``rmsra``/``rmsdec``:
+      How to fill missing/non-finite ``rmsra``/``rmsdec``. The default 'const'
+      is the legacy contract kept for existing callers/tests; production OD
+      callers should pass ``'v2_rms'`` (the Asteroid Institute study table —
+      decision 2026-09-23, bead d2f) and treat ``'veres2017'`` as the legacy
+      reference only:
         ``'const'``     — leave the missing rows as NaN and let ``prevent_nans``/
                           ``diag_nan`` substitute a tiny constant (legacy behavior).
         ``'v2_rms'``    — fill missing sigmas via ``get_v2rms_sigma(stn, astcat)``
